@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS transactions_date_idx ON transactions(on_date);
-CREATE INDEX IF NOT EXISTS transactions_cat_month_idx ON transactions(category_id, date_trunc('month', on_date));
+CREATE INDEX IF NOT EXISTS transactions_cat_date_idx ON transactions(category_id, on_date);
 
 CREATE TABLE IF NOT EXISTS subscriptions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
