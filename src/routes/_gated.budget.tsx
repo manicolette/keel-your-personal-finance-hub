@@ -21,6 +21,11 @@ const budgetQueryOptions = (month: string) =>
 const catsQueryOptions = queryOptions({ queryKey: ["categories"], queryFn: () => listCategories() });
 
 const currentMonth = () => new Date().toISOString().slice(0, 7);
+const shiftMonth = (m: string, delta: number) => {
+  const [y, mm] = m.split("-").map(Number);
+  const d = new Date(Date.UTC(y, (mm - 1) + delta, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+};
 
 const searchSchema = z.object({
   month: fallback(z.string(), currentMonth()).default(currentMonth()),
