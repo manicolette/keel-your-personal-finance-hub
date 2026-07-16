@@ -74,19 +74,19 @@ function BudgetPage() {
         actions={
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" type="button"
-              onClick={() => navigate({ search: { month: shiftMonth(month, -1) } })}
+              onClick={() => go(shiftMonth(month, -1))}
               aria-label="Previous month">←</Button>
             <TextInput
               type="month"
               value={month}
-              onChange={(e) => navigate({ search: { month: e.target.value || currentMonth() } })}
+              onChange={(e) => go(e.target.value || currentMonth())}
               className="w-40"
             />
             <Button variant="outline" size="sm" type="button"
-              onClick={() => navigate({ search: { month: shiftMonth(month, 1) } })}
+              onClick={() => go(shiftMonth(month, 1))}
               aria-label="Next month">→</Button>
             <Button variant="ghost" size="sm" type="button"
-              onClick={() => navigate({ search: { month: currentMonth() } })}
+              onClick={() => go(currentMonth())}
               disabled={month === currentMonth()}>Today</Button>
           </div>
         } />
