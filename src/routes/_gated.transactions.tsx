@@ -49,7 +49,7 @@ function TransactionsPage() {
   const { from, to, account, category } = Route.useSearch();
   const navigate = useNavigate({ from: "/_gated/transactions" });
   const setFilter = (patch: Partial<{ from: string; to: string; account: string; category: string }>) =>
-    navigate({ search: (prev) => ({ ...prev, ...patch }) });
+    navigate({ search: (prev: { from: string; to: string; account: string; category: string }) => ({ ...prev, ...patch }) });
   const txs = allTxs.filter((t) => {
     if (from && t.on_date < from) return false;
     if (to && t.on_date > to) return false;
