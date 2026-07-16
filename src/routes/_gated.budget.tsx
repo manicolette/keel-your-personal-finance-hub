@@ -46,7 +46,8 @@ export const Route = createFileRoute("/_gated/budget")({
 
 function BudgetPage() {
   const { month } = Route.useSearch();
-  const navigate = useNavigate({ from: "/_gated/budget" });
+  const navigate = useNavigate();
+  const go = (month: string) => navigate({ to: "/budget", search: { month } });
   const { data } = useSuspenseQuery(budgetQueryOptions(month));
   const { data: cats } = useSuspenseQuery(catsQueryOptions);
   const qc = useQueryClient();
@@ -73,19 +74,19 @@ function BudgetPage() {
         actions={
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" type="button"
-              onClick={() => navigate({ search: { month: shiftMonth(month, -1) } })}
+              onClick={() => go(shiftMonth(month, -1))}
               aria-label="Previous month">←</Button>
             <TextInput
               type="month"
               value={month}
-              onChange={(e) => navigate({ search: { month: e.target.value || currentMonth() } })}
+              onChange={(e) => go(e.target.value || currentMonth())}
               className="w-40"
             />
             <Button variant="outline" size="sm" type="button"
-              onClick={() => navigate({ search: { month: shiftMonth(month, 1) } })}
+              onClick={() => go(shiftMonth(month, 1))}
               aria-label="Next month">→</Button>
             <Button variant="ghost" size="sm" type="button"
-              onClick={() => navigate({ search: { month: currentMonth() } })}
+              onClick={() => go(currentMonth())}
               disabled={month === currentMonth()}>Today</Button>
           </div>
         } />
