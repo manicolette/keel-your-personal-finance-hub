@@ -140,6 +140,3 @@ function DebtRow({ debt, onEdit, onDelete }: { debt: Debt; onEdit: () => void; o
     </Card>
   );
 }
-    </div>
-  );
-}
