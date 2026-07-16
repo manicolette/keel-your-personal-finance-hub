@@ -2,18 +2,12 @@ import { createFileRoute, useRouter, redirect } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import { toast } from "sonner";
-import { unlockSite } from "@/lib/gate.functions";
-import { isUnlocked } from "@/lib/session.server";
-import { createServerFn } from "@tanstack/react-start";
+import { checkUnlocked, unlockSite } from "@/lib/gate.functions";
 import { Button, Card, Field, TextInput } from "@/components/keel-ui";
-
-const alreadyUnlocked = createServerFn({ method: "GET" }).handler(async () => {
-  return { unlocked: await isUnlocked() };
-});
 
 export const Route = createFileRoute("/unlock")({
   beforeLoad: async () => {
-    const { unlocked } = await alreadyUnlocked();
+    const { unlocked } = await checkUnlocked();
     if (unlocked) throw redirect({ to: "/dashboard" });
   },
   component: UnlockPage,
