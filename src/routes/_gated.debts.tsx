@@ -4,6 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import { toast } from "sonner";
 import { createDebt, deleteDebt, listDebts, updateDebt, type Debt } from "@/lib/keel.functions";
+import { computePayoff } from "@/lib/payoff";
 import { Button, Card, EmptyState, Field, PageHeader, Table, Td, TextInput, Textarea, Th, money } from "@/components/keel-ui";
 
 const debtsQuery = queryOptions({ queryKey: ["debts"], queryFn: () => listDebts() });
