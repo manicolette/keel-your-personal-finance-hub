@@ -46,7 +46,8 @@ export const Route = createFileRoute("/_gated/budget")({
 
 function BudgetPage() {
   const { month } = Route.useSearch();
-  const navigate = useNavigate({ from: "/_gated/budget" });
+  const navigate = useNavigate();
+  const go = (month: string) => navigate({ to: "/budget", search: { month } });
   const { data } = useSuspenseQuery(budgetQueryOptions(month));
   const { data: cats } = useSuspenseQuery(catsQueryOptions);
   const qc = useQueryClient();
