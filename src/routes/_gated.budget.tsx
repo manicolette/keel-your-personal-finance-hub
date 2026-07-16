@@ -1,5 +1,6 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+
 import { useServerFn } from "@tanstack/react-start";
 import { zodValidator, fallback } from "@tanstack/zod-adapter";
 import { z } from "zod";
@@ -73,23 +74,33 @@ function BudgetPage() {
       <PageHeader title="Budget" subtitle="Plan monthly spending by category."
         actions={
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" type="button"
-              onClick={() => go(shiftMonth(month, -1))}
-              aria-label="Previous month">←</Button>
+            <Link
+              to="/budget"
+              search={{ month: shiftMonth(month, -1) }}
+              aria-label="Previous month"
+              className="inline-flex h-8 items-center justify-center rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-muted"
+            >←</Link>
             <TextInput
               type="month"
               value={month}
               onChange={(e) => go(e.target.value || currentMonth())}
               className="w-40"
             />
-            <Button variant="outline" size="sm" type="button"
-              onClick={() => go(shiftMonth(month, 1))}
-              aria-label="Next month">→</Button>
-            <Button variant="ghost" size="sm" type="button"
-              onClick={() => go(currentMonth())}
-              disabled={month === currentMonth()}>Today</Button>
+            <Link
+              to="/budget"
+              search={{ month: shiftMonth(month, 1) }}
+              aria-label="Next month"
+              className="inline-flex h-8 items-center justify-center rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-muted"
+            >→</Link>
+            <Link
+              to="/budget"
+              search={{ month: currentMonth() }}
+              aria-disabled={month === currentMonth()}
+              className="inline-flex h-8 items-center justify-center rounded-md px-2.5 text-xs font-medium text-foreground hover:bg-muted aria-disabled:pointer-events-none aria-disabled:opacity-50"
+            >Today</Link>
           </div>
         } />
+
 
       <div className="grid gap-3 sm:grid-cols-3">
         <Card>
