@@ -1,6 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
+import { zodValidator, fallback } from "@tanstack/zod-adapter";
+import { z } from "zod";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
@@ -18,7 +20,15 @@ const txQuery = queryOptions({ queryKey: ["transactions"], queryFn: () => listTr
 const acctQuery = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
 const catQuery = queryOptions({ queryKey: ["categories"], queryFn: () => listCategories() });
 
+const searchSchema = z.object({
+  from: fallback(z.string(), "").default(""),
+  to: fallback(z.string(), "").default(""),
+  account: fallback(z.string(), "").default(""),
+  category: fallback(z.string(), "").default(""),
+});
+
 export const Route = createFileRoute("/_gated/transactions")({
+  validateSearch: zodValidator(searchSchema),
   loader: async ({ context }) => {
     await Promise.all([
       context.queryClient.ensureQueryData(txQuery),
@@ -33,9 +43,20 @@ export const Route = createFileRoute("/_gated/transactions")({
 const today = () => new Date().toISOString().slice(0, 10);
 
 function TransactionsPage() {
-  const { data: txs } = useSuspenseQuery(txQuery);
+  const { data: allTxs } = useSuspenseQuery(txQuery);
   const { data: accts } = useSuspenseQuery(acctQuery);
   const { data: cats } = useSuspenseQuery(catQuery);
+  const { from, to, account, category } = Route.useSearch();
+  const navigate = useNavigate({ from: "/_gated/transactions" });
+  const setFilter = (patch: Partial<{ from: string; to: string; account: string; category: string }>) =>
+    navigate({ search: (prev: { from: string; to: string; account: string; category: string }) => ({ ...prev, ...patch }) });
+  const txs = allTxs.filter((t) => {
+    if (from && t.on_date < from) return false;
+    if (to && t.on_date > to) return false;
+    if (account && t.account_id !== account && t.transfer_account_id !== account) return false;
+    if (category && t.category_id !== category) return false;
+    return true;
+  });
   const qc = useQueryClient();
   const create = useServerFn(createTransaction);
   const update = useServerFn(updateTransaction);
@@ -96,6 +117,37 @@ function TransactionsPage() {
         </div>} />
 
       {accts.length === 0 && <EmptyState>Add an account first before creating transactions.</EmptyState>}
+
+      <Card>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">From</span>
+            <TextInput type="date" value={from} onChange={(e) => setFilter({ from: e.target.value })} className="w-40" />
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">To</span>
+            <TextInput type="date" value={to} onChange={(e) => setFilter({ to: e.target.value })} className="w-40" />
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">Account</span>
+            <Select value={account} onChange={(e) => setFilter({ account: e.target.value })} className="w-44">
+              <option value="">All accounts</option>
+              {accts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </Select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">Category</span>
+            <Select value={category} onChange={(e) => setFilter({ category: e.target.value })} className="w-44">
+              <option value="">All categories</option>
+              {cats.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.kind})</option>)}
+            </Select>
+          </label>
+          {(from || to || account || category) && (
+            <Button size="sm" variant="ghost" onClick={() => navigate({ search: { from: "", to: "", account: "", category: "" } })}>Clear</Button>
+          )}
+          <div className="ml-auto text-xs text-muted-foreground tabular-nums">{txs.length} of {allTxs.length}</div>
+        </div>
+      </Card>
 
       {formOpen && accts.length > 0 && (
         <Card>

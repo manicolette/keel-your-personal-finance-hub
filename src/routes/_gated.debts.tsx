@@ -4,6 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import { toast } from "sonner";
 import { createDebt, deleteDebt, listDebts, updateDebt, type Debt } from "@/lib/keel.functions";
+import { computePayoff } from "@/lib/payoff";
 import { Button, Card, EmptyState, Field, PageHeader, Table, Td, TextInput, Textarea, Th, money } from "@/components/keel-ui";
 
 const debtsQuery = queryOptions({ queryKey: ["debts"], queryFn: () => listDebts() });
@@ -78,27 +79,64 @@ function DebtsPage() {
       )}
 
       {debts.length === 0 ? <EmptyState>No debts tracked.</EmptyState> : (
-        <Table head={<>
-          <Th>Name</Th><Th className="text-right">Balance</Th><Th className="text-right">Min</Th>
-          <Th className="text-right">APR</Th><Th>Due</Th><Th></Th>
-        </>}>
-          {debts.map((d) => (
-            <tr key={d.id}>
-              <Td className="font-medium">{d.name}</Td>
-              <Td className="text-right tabular-nums">{money(d.balance, d.currency)}</Td>
-              <Td className="text-right tabular-nums">{money(d.min_payment, d.currency)}</Td>
-              <Td className="text-right tabular-nums">{d.apr}%</Td>
-              <Td>{d.due_day ?? "—"}</Td>
-              <Td className="text-right">
-                <div className="flex justify-end gap-1">
-                  <Button size="sm" variant="outline" onClick={() => { setEditing(d); setShowForm(false); }}>Edit</Button>
-                  <Button size="sm" variant="danger" onClick={() => confirm(`Delete ${d.name}?`) && mDelete.mutate({ data: { id: d.id } })}>Delete</Button>
-                </div>
-              </Td>
-            </tr>
-          ))}
-        </Table>
+        <div className="space-y-3">
+          {debts.map((d) => <DebtRow key={d.id} debt={d} onEdit={() => { setEditing(d); setShowForm(false); }} onDelete={() => confirm(`Delete ${d.name}?`) && mDelete.mutate({ data: { id: d.id } })} />)}
+        </div>
       )}
     </div>
+  );
+}
+
+function DebtRow({ debt, onEdit, onDelete }: { debt: Debt; onEdit: () => void; onDelete: () => void }) {
+  const [extra, setExtra] = useState<number>(0);
+  const base = computePayoff(debt.balance, debt.apr, debt.min_payment);
+  const sim = computePayoff(debt.balance, debt.apr, debt.min_payment + (extra || 0));
+  const savedInterest = base.months != null && sim.months != null ? Math.max(0, base.totalInterest - sim.totalInterest) : 0;
+  const savedMonths = base.months != null && sim.months != null ? Math.max(0, base.months - sim.months) : 0;
+  const fmtDate = (iso: string | null) => iso ? new Date(iso + "T00:00:00Z").toLocaleDateString(undefined, { month: "short", year: "numeric" }) : "—";
+
+  return (
+    <Card>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="font-medium">{debt.name}</div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            {money(debt.balance, debt.currency)} @ {debt.apr}% · min {money(debt.min_payment, debt.currency)}
+            {debt.due_day ? ` · due day ${debt.due_day}` : ""}
+          </div>
+          <div className="mt-1 text-xs">
+            <span className="text-muted-foreground">Payoff (min only): </span>
+            <span className="tabular-nums font-medium">
+              {base.months == null ? "never — payment doesn't cover interest" :
+                `${base.months} mo (${fmtDate(base.payoffDate)}), interest ${money(base.totalInterest, debt.currency)}`}
+            </span>
+          </div>
+        </div>
+        <div className="flex gap-1">
+          <Button size="sm" variant="outline" onClick={onEdit}>Edit</Button>
+          <Button size="sm" variant="danger" onClick={onDelete}>Delete</Button>
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-md border border-border bg-muted/40 p-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">Extra per month</span>
+            <TextInput type="number" step="0.01" min={0} value={extra || ""} placeholder="0"
+              onChange={(e) => setExtra(Number(e.target.value) || 0)} className="w-32" />
+          </label>
+          <div className="text-xs text-muted-foreground">
+            Paying <span className="tabular-nums font-medium text-foreground">{money(debt.min_payment + (extra || 0), debt.currency)}</span>/mo →
+            {sim.months == null ? " never pays off" :
+              <> pays off in <span className="tabular-nums font-medium text-foreground">{sim.months} mo</span> ({fmtDate(sim.payoffDate)}), interest <span className="tabular-nums font-medium text-foreground">{money(sim.totalInterest, debt.currency)}</span></>}
+            {extra > 0 && sim.months != null && base.months != null && (
+              <div className="mt-1 text-[color:var(--positive)]">
+                Save {money(savedInterest, debt.currency)} in interest, {savedMonths} months sooner.
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </Card>
   );
 }

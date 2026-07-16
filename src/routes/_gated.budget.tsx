@@ -21,6 +21,11 @@ const budgetQueryOptions = (month: string) =>
 const catsQueryOptions = queryOptions({ queryKey: ["categories"], queryFn: () => listCategories() });
 
 const currentMonth = () => new Date().toISOString().slice(0, 7);
+const shiftMonth = (m: string, delta: number) => {
+  const [y, mm] = m.split("-").map(Number);
+  const d = new Date(Date.UTC(y, (mm - 1) + delta, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+};
 
 const searchSchema = z.object({
   month: fallback(z.string(), currentMonth()).default(currentMonth()),
@@ -66,12 +71,23 @@ function BudgetPage() {
     <div className="space-y-5">
       <PageHeader title="Budget" subtitle="Plan monthly spending by category."
         actions={
-          <TextInput
-            type="month"
-            value={month}
-            onChange={(e) => navigate({ search: { month: e.target.value || currentMonth() } })}
-            className="w-40"
-          />
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" type="button"
+              onClick={() => navigate({ search: { month: shiftMonth(month, -1) } })}
+              aria-label="Previous month">←</Button>
+            <TextInput
+              type="month"
+              value={month}
+              onChange={(e) => navigate({ search: { month: e.target.value || currentMonth() } })}
+              className="w-40"
+            />
+            <Button variant="outline" size="sm" type="button"
+              onClick={() => navigate({ search: { month: shiftMonth(month, 1) } })}
+              aria-label="Next month">→</Button>
+            <Button variant="ghost" size="sm" type="button"
+              onClick={() => navigate({ search: { month: currentMonth() } })}
+              disabled={month === currentMonth()}>Today</Button>
+          </div>
         } />
 
       <div className="grid gap-3 sm:grid-cols-3">
