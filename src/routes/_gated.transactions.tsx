@@ -1,6 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
+import { zodValidator, fallback } from "@tanstack/zod-adapter";
+import { z } from "zod";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
@@ -18,7 +20,15 @@ const txQuery = queryOptions({ queryKey: ["transactions"], queryFn: () => listTr
 const acctQuery = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
 const catQuery = queryOptions({ queryKey: ["categories"], queryFn: () => listCategories() });
 
+const searchSchema = z.object({
+  from: fallback(z.string(), "").default(""),
+  to: fallback(z.string(), "").default(""),
+  account: fallback(z.string(), "").default(""),
+  category: fallback(z.string(), "").default(""),
+});
+
 export const Route = createFileRoute("/_gated/transactions")({
+  validateSearch: zodValidator(searchSchema),
   loader: async ({ context }) => {
     await Promise.all([
       context.queryClient.ensureQueryData(txQuery),
