@@ -118,6 +118,37 @@ function TransactionsPage() {
 
       {accts.length === 0 && <EmptyState>Add an account first before creating transactions.</EmptyState>}
 
+      <Card>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">From</span>
+            <TextInput type="date" value={from} onChange={(e) => setFilter({ from: e.target.value })} className="w-40" />
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">To</span>
+            <TextInput type="date" value={to} onChange={(e) => setFilter({ to: e.target.value })} className="w-40" />
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">Account</span>
+            <Select value={account} onChange={(e) => setFilter({ account: e.target.value })} className="w-44">
+              <option value="">All accounts</option>
+              {accts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </Select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">Category</span>
+            <Select value={category} onChange={(e) => setFilter({ category: e.target.value })} className="w-44">
+              <option value="">All categories</option>
+              {cats.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.kind})</option>)}
+            </Select>
+          </label>
+          {(from || to || account || category) && (
+            <Button size="sm" variant="ghost" onClick={() => navigate({ search: { from: "", to: "", account: "", category: "" } })}>Clear</Button>
+          )}
+          <div className="ml-auto text-xs text-muted-foreground tabular-nums">{txs.length} of {allTxs.length}</div>
+        </div>
+      </Card>
+
       {formOpen && accts.length > 0 && (
         <Card>
           <form className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={(e) => {
