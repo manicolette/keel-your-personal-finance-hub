@@ -13,8 +13,17 @@ import { Route as UnlockRouteImport } from './routes/unlock'
 import { Route as GatedRouteImport } from './routes/_gated'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as GatedTransactionsRouteImport } from './routes/_gated.transactions'
+import { Route as GatedSubscriptionsRouteImport } from './routes/_gated.subscriptions'
+import { Route as GatedSettingsRouteImport } from './routes/_gated.settings'
+import { Route as GatedRemindersRouteImport } from './routes/_gated.reminders'
+import { Route as GatedNetworthRouteImport } from './routes/_gated.networth'
+import { Route as GatedGoalsRouteImport } from './routes/_gated.goals'
+import { Route as GatedFxRouteImport } from './routes/_gated.fx'
+import { Route as GatedDebtsRouteImport } from './routes/_gated.debts'
 import { Route as GatedDashboardRouteImport } from './routes/_gated.dashboard'
+import { Route as GatedConstantsRouteImport } from './routes/_gated.constants'
 import { Route as GatedCategoriesRouteImport } from './routes/_gated.categories'
+import { Route as GatedBudgetRouteImport } from './routes/_gated.budget'
 import { Route as GatedAccountsRouteImport } from './routes/_gated.accounts'
 
 const UnlockRoute = UnlockRouteImport.update({
@@ -36,14 +45,59 @@ const GatedTransactionsRoute = GatedTransactionsRouteImport.update({
   path: '/transactions',
   getParentRoute: () => GatedRoute,
 } as any)
+const GatedSubscriptionsRoute = GatedSubscriptionsRouteImport.update({
+  id: '/subscriptions',
+  path: '/subscriptions',
+  getParentRoute: () => GatedRoute,
+} as any)
+const GatedSettingsRoute = GatedSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => GatedRoute,
+} as any)
+const GatedRemindersRoute = GatedRemindersRouteImport.update({
+  id: '/reminders',
+  path: '/reminders',
+  getParentRoute: () => GatedRoute,
+} as any)
+const GatedNetworthRoute = GatedNetworthRouteImport.update({
+  id: '/networth',
+  path: '/networth',
+  getParentRoute: () => GatedRoute,
+} as any)
+const GatedGoalsRoute = GatedGoalsRouteImport.update({
+  id: '/goals',
+  path: '/goals',
+  getParentRoute: () => GatedRoute,
+} as any)
+const GatedFxRoute = GatedFxRouteImport.update({
+  id: '/fx',
+  path: '/fx',
+  getParentRoute: () => GatedRoute,
+} as any)
+const GatedDebtsRoute = GatedDebtsRouteImport.update({
+  id: '/debts',
+  path: '/debts',
+  getParentRoute: () => GatedRoute,
+} as any)
 const GatedDashboardRoute = GatedDashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
   getParentRoute: () => GatedRoute,
 } as any)
+const GatedConstantsRoute = GatedConstantsRouteImport.update({
+  id: '/constants',
+  path: '/constants',
+  getParentRoute: () => GatedRoute,
+} as any)
 const GatedCategoriesRoute = GatedCategoriesRouteImport.update({
   id: '/categories',
   path: '/categories',
+  getParentRoute: () => GatedRoute,
+} as any)
+const GatedBudgetRoute = GatedBudgetRouteImport.update({
+  id: '/budget',
+  path: '/budget',
   getParentRoute: () => GatedRoute,
 } as any)
 const GatedAccountsRoute = GatedAccountsRouteImport.update({
@@ -56,16 +110,34 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/unlock': typeof UnlockRoute
   '/accounts': typeof GatedAccountsRoute
+  '/budget': typeof GatedBudgetRoute
   '/categories': typeof GatedCategoriesRoute
+  '/constants': typeof GatedConstantsRoute
   '/dashboard': typeof GatedDashboardRoute
+  '/debts': typeof GatedDebtsRoute
+  '/fx': typeof GatedFxRoute
+  '/goals': typeof GatedGoalsRoute
+  '/networth': typeof GatedNetworthRoute
+  '/reminders': typeof GatedRemindersRoute
+  '/settings': typeof GatedSettingsRoute
+  '/subscriptions': typeof GatedSubscriptionsRoute
   '/transactions': typeof GatedTransactionsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/unlock': typeof UnlockRoute
   '/accounts': typeof GatedAccountsRoute
+  '/budget': typeof GatedBudgetRoute
   '/categories': typeof GatedCategoriesRoute
+  '/constants': typeof GatedConstantsRoute
   '/dashboard': typeof GatedDashboardRoute
+  '/debts': typeof GatedDebtsRoute
+  '/fx': typeof GatedFxRoute
+  '/goals': typeof GatedGoalsRoute
+  '/networth': typeof GatedNetworthRoute
+  '/reminders': typeof GatedRemindersRoute
+  '/settings': typeof GatedSettingsRoute
+  '/subscriptions': typeof GatedSubscriptionsRoute
   '/transactions': typeof GatedTransactionsRoute
 }
 export interface FileRoutesById {
@@ -74,8 +146,17 @@ export interface FileRoutesById {
   '/_gated': typeof GatedRouteWithChildren
   '/unlock': typeof UnlockRoute
   '/_gated/accounts': typeof GatedAccountsRoute
+  '/_gated/budget': typeof GatedBudgetRoute
   '/_gated/categories': typeof GatedCategoriesRoute
+  '/_gated/constants': typeof GatedConstantsRoute
   '/_gated/dashboard': typeof GatedDashboardRoute
+  '/_gated/debts': typeof GatedDebtsRoute
+  '/_gated/fx': typeof GatedFxRoute
+  '/_gated/goals': typeof GatedGoalsRoute
+  '/_gated/networth': typeof GatedNetworthRoute
+  '/_gated/reminders': typeof GatedRemindersRoute
+  '/_gated/settings': typeof GatedSettingsRoute
+  '/_gated/subscriptions': typeof GatedSubscriptionsRoute
   '/_gated/transactions': typeof GatedTransactionsRoute
 }
 export interface FileRouteTypes {
@@ -84,16 +165,34 @@ export interface FileRouteTypes {
     | '/'
     | '/unlock'
     | '/accounts'
+    | '/budget'
     | '/categories'
+    | '/constants'
     | '/dashboard'
+    | '/debts'
+    | '/fx'
+    | '/goals'
+    | '/networth'
+    | '/reminders'
+    | '/settings'
+    | '/subscriptions'
     | '/transactions'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/unlock'
     | '/accounts'
+    | '/budget'
     | '/categories'
+    | '/constants'
     | '/dashboard'
+    | '/debts'
+    | '/fx'
+    | '/goals'
+    | '/networth'
+    | '/reminders'
+    | '/settings'
+    | '/subscriptions'
     | '/transactions'
   id:
     | '__root__'
@@ -101,8 +200,17 @@ export interface FileRouteTypes {
     | '/_gated'
     | '/unlock'
     | '/_gated/accounts'
+    | '/_gated/budget'
     | '/_gated/categories'
+    | '/_gated/constants'
     | '/_gated/dashboard'
+    | '/_gated/debts'
+    | '/_gated/fx'
+    | '/_gated/goals'
+    | '/_gated/networth'
+    | '/_gated/reminders'
+    | '/_gated/settings'
+    | '/_gated/subscriptions'
     | '/_gated/transactions'
   fileRoutesById: FileRoutesById
 }
@@ -142,6 +250,55 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GatedTransactionsRouteImport
       parentRoute: typeof GatedRoute
     }
+    '/_gated/subscriptions': {
+      id: '/_gated/subscriptions'
+      path: '/subscriptions'
+      fullPath: '/subscriptions'
+      preLoaderRoute: typeof GatedSubscriptionsRouteImport
+      parentRoute: typeof GatedRoute
+    }
+    '/_gated/settings': {
+      id: '/_gated/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof GatedSettingsRouteImport
+      parentRoute: typeof GatedRoute
+    }
+    '/_gated/reminders': {
+      id: '/_gated/reminders'
+      path: '/reminders'
+      fullPath: '/reminders'
+      preLoaderRoute: typeof GatedRemindersRouteImport
+      parentRoute: typeof GatedRoute
+    }
+    '/_gated/networth': {
+      id: '/_gated/networth'
+      path: '/networth'
+      fullPath: '/networth'
+      preLoaderRoute: typeof GatedNetworthRouteImport
+      parentRoute: typeof GatedRoute
+    }
+    '/_gated/goals': {
+      id: '/_gated/goals'
+      path: '/goals'
+      fullPath: '/goals'
+      preLoaderRoute: typeof GatedGoalsRouteImport
+      parentRoute: typeof GatedRoute
+    }
+    '/_gated/fx': {
+      id: '/_gated/fx'
+      path: '/fx'
+      fullPath: '/fx'
+      preLoaderRoute: typeof GatedFxRouteImport
+      parentRoute: typeof GatedRoute
+    }
+    '/_gated/debts': {
+      id: '/_gated/debts'
+      path: '/debts'
+      fullPath: '/debts'
+      preLoaderRoute: typeof GatedDebtsRouteImport
+      parentRoute: typeof GatedRoute
+    }
     '/_gated/dashboard': {
       id: '/_gated/dashboard'
       path: '/dashboard'
@@ -149,11 +306,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GatedDashboardRouteImport
       parentRoute: typeof GatedRoute
     }
+    '/_gated/constants': {
+      id: '/_gated/constants'
+      path: '/constants'
+      fullPath: '/constants'
+      preLoaderRoute: typeof GatedConstantsRouteImport
+      parentRoute: typeof GatedRoute
+    }
     '/_gated/categories': {
       id: '/_gated/categories'
       path: '/categories'
       fullPath: '/categories'
       preLoaderRoute: typeof GatedCategoriesRouteImport
+      parentRoute: typeof GatedRoute
+    }
+    '/_gated/budget': {
+      id: '/_gated/budget'
+      path: '/budget'
+      fullPath: '/budget'
+      preLoaderRoute: typeof GatedBudgetRouteImport
       parentRoute: typeof GatedRoute
     }
     '/_gated/accounts': {
@@ -168,15 +339,33 @@ declare module '@tanstack/react-router' {
 
 interface GatedRouteChildren {
   GatedAccountsRoute: typeof GatedAccountsRoute
+  GatedBudgetRoute: typeof GatedBudgetRoute
   GatedCategoriesRoute: typeof GatedCategoriesRoute
+  GatedConstantsRoute: typeof GatedConstantsRoute
   GatedDashboardRoute: typeof GatedDashboardRoute
+  GatedDebtsRoute: typeof GatedDebtsRoute
+  GatedFxRoute: typeof GatedFxRoute
+  GatedGoalsRoute: typeof GatedGoalsRoute
+  GatedNetworthRoute: typeof GatedNetworthRoute
+  GatedRemindersRoute: typeof GatedRemindersRoute
+  GatedSettingsRoute: typeof GatedSettingsRoute
+  GatedSubscriptionsRoute: typeof GatedSubscriptionsRoute
   GatedTransactionsRoute: typeof GatedTransactionsRoute
 }
 
 const GatedRouteChildren: GatedRouteChildren = {
   GatedAccountsRoute: GatedAccountsRoute,
+  GatedBudgetRoute: GatedBudgetRoute,
   GatedCategoriesRoute: GatedCategoriesRoute,
+  GatedConstantsRoute: GatedConstantsRoute,
   GatedDashboardRoute: GatedDashboardRoute,
+  GatedDebtsRoute: GatedDebtsRoute,
+  GatedFxRoute: GatedFxRoute,
+  GatedGoalsRoute: GatedGoalsRoute,
+  GatedNetworthRoute: GatedNetworthRoute,
+  GatedRemindersRoute: GatedRemindersRoute,
+  GatedSettingsRoute: GatedSettingsRoute,
+  GatedSubscriptionsRoute: GatedSubscriptionsRoute,
   GatedTransactionsRoute: GatedTransactionsRoute,
 }
 
