@@ -10,11 +10,20 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as UnlockRouteImport } from './routes/unlock'
+import { Route as GatedRouteImport } from './routes/_gated'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as GatedTransactionsRouteImport } from './routes/_gated.transactions'
+import { Route as GatedDashboardRouteImport } from './routes/_gated.dashboard'
+import { Route as GatedCategoriesRouteImport } from './routes/_gated.categories'
+import { Route as GatedAccountsRouteImport } from './routes/_gated.accounts'
 
 const UnlockRoute = UnlockRouteImport.update({
   id: '/unlock',
   path: '/unlock',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GatedRoute = GatedRouteImport.update({
+  id: '/_gated',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -22,30 +31,84 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const GatedTransactionsRoute = GatedTransactionsRouteImport.update({
+  id: '/transactions',
+  path: '/transactions',
+  getParentRoute: () => GatedRoute,
+} as any)
+const GatedDashboardRoute = GatedDashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
+  getParentRoute: () => GatedRoute,
+} as any)
+const GatedCategoriesRoute = GatedCategoriesRouteImport.update({
+  id: '/categories',
+  path: '/categories',
+  getParentRoute: () => GatedRoute,
+} as any)
+const GatedAccountsRoute = GatedAccountsRouteImport.update({
+  id: '/accounts',
+  path: '/accounts',
+  getParentRoute: () => GatedRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/unlock': typeof UnlockRoute
+  '/accounts': typeof GatedAccountsRoute
+  '/categories': typeof GatedCategoriesRoute
+  '/dashboard': typeof GatedDashboardRoute
+  '/transactions': typeof GatedTransactionsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/unlock': typeof UnlockRoute
+  '/accounts': typeof GatedAccountsRoute
+  '/categories': typeof GatedCategoriesRoute
+  '/dashboard': typeof GatedDashboardRoute
+  '/transactions': typeof GatedTransactionsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/_gated': typeof GatedRouteWithChildren
   '/unlock': typeof UnlockRoute
+  '/_gated/accounts': typeof GatedAccountsRoute
+  '/_gated/categories': typeof GatedCategoriesRoute
+  '/_gated/dashboard': typeof GatedDashboardRoute
+  '/_gated/transactions': typeof GatedTransactionsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/unlock'
+  fullPaths:
+    | '/'
+    | '/unlock'
+    | '/accounts'
+    | '/categories'
+    | '/dashboard'
+    | '/transactions'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/unlock'
-  id: '__root__' | '/' | '/unlock'
+  to:
+    | '/'
+    | '/unlock'
+    | '/accounts'
+    | '/categories'
+    | '/dashboard'
+    | '/transactions'
+  id:
+    | '__root__'
+    | '/'
+    | '/_gated'
+    | '/unlock'
+    | '/_gated/accounts'
+    | '/_gated/categories'
+    | '/_gated/dashboard'
+    | '/_gated/transactions'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  GatedRoute: typeof GatedRouteWithChildren
   UnlockRoute: typeof UnlockRoute
 }
 
@@ -58,6 +121,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof UnlockRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_gated': {
+      id: '/_gated'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof GatedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -65,11 +135,56 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_gated/transactions': {
+      id: '/_gated/transactions'
+      path: '/transactions'
+      fullPath: '/transactions'
+      preLoaderRoute: typeof GatedTransactionsRouteImport
+      parentRoute: typeof GatedRoute
+    }
+    '/_gated/dashboard': {
+      id: '/_gated/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof GatedDashboardRouteImport
+      parentRoute: typeof GatedRoute
+    }
+    '/_gated/categories': {
+      id: '/_gated/categories'
+      path: '/categories'
+      fullPath: '/categories'
+      preLoaderRoute: typeof GatedCategoriesRouteImport
+      parentRoute: typeof GatedRoute
+    }
+    '/_gated/accounts': {
+      id: '/_gated/accounts'
+      path: '/accounts'
+      fullPath: '/accounts'
+      preLoaderRoute: typeof GatedAccountsRouteImport
+      parentRoute: typeof GatedRoute
+    }
   }
 }
 
+interface GatedRouteChildren {
+  GatedAccountsRoute: typeof GatedAccountsRoute
+  GatedCategoriesRoute: typeof GatedCategoriesRoute
+  GatedDashboardRoute: typeof GatedDashboardRoute
+  GatedTransactionsRoute: typeof GatedTransactionsRoute
+}
+
+const GatedRouteChildren: GatedRouteChildren = {
+  GatedAccountsRoute: GatedAccountsRoute,
+  GatedCategoriesRoute: GatedCategoriesRoute,
+  GatedDashboardRoute: GatedDashboardRoute,
+  GatedTransactionsRoute: GatedTransactionsRoute,
+}
+
+const GatedRouteWithChildren = GatedRoute._addFileChildren(GatedRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  GatedRoute: GatedRouteWithChildren,
   UnlockRoute: UnlockRoute,
 }
 export const routeTree = rootRouteImport
