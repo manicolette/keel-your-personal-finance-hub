@@ -88,7 +88,7 @@ function DashboardPage() {
                     <div className="font-medium">{s.name}</div>
                     <div className="text-xs text-muted-foreground">{s.next_date}</div>
                   </div>
-                  <div className="tabular-nums text-[color:var(--positive)]">{money(s.amount, s.currency)}</div>
+                  <div className="tabular-nums text-[color:var(--positive)]">{s.amount == null ? "variable" : money(s.amount, s.currency)}</div>
                 </li>
               ))}
             </ul>
