@@ -238,6 +238,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS mei_def_month_uidx ON monthly_expense_instance
 CREATE INDEX IF NOT EXISTS mei_month_idx ON monthly_expense_instances(month);
 CREATE INDEX IF NOT EXISTS mei_category_month_idx ON monthly_expense_instances(category_id, month);
 CREATE INDEX IF NOT EXISTS mei_txn_idx ON monthly_expense_instances(transaction_id);
+
+-- Additive: extend recurring_income for bi-weekly / semi-monthly / variable amounts.
+ALTER TABLE recurring_income DROP CONSTRAINT IF EXISTS recurring_income_frequency_check;
+ALTER TABLE recurring_income ADD CONSTRAINT recurring_income_frequency_check
+  CHECK (frequency IN ('weekly','biweekly','semimonthly','monthly','quarterly','yearly'));
+ALTER TABLE recurring_income ADD COLUMN IF NOT EXISTS anchor_date date;
+ALTER TABLE recurring_income ADD COLUMN IF NOT EXISTS semimonthly_day_1 int;
+ALTER TABLE recurring_income ADD COLUMN IF NOT EXISTS semimonthly_day_2 int;
+ALTER TABLE recurring_income ADD COLUMN IF NOT EXISTS is_variable boolean NOT NULL DEFAULT false;
+ALTER TABLE recurring_income ALTER COLUMN amount DROP NOT NULL;
+
+-- Additive: per-occurrence income instances (Expected → Received).
+CREATE TABLE IF NOT EXISTS income_instances (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  recurring_income_id uuid REFERENCES recurring_income(id) ON DELETE SET NULL,
+  expected_date date NOT NULL,
+  name_snapshot text NOT NULL,
+  expected_amount numeric(14,2),
+  currency text NOT NULL DEFAULT 'USD',
+  status text NOT NULL DEFAULT 'expected' CHECK (status IN ('expected','received','skipped')),
+  transaction_id uuid REFERENCES transactions(id) ON DELETE SET NULL,
+  received_amount numeric(14,2),
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ii_def_date_uidx ON income_instances(recurring_income_id, expected_date) WHERE recurring_income_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ii_date_idx ON income_instances(expected_date);
+CREATE INDEX IF NOT EXISTS ii_txn_idx ON income_instances(transaction_id);
 `;
 
 export function ensureSchema(): Promise<void> {
