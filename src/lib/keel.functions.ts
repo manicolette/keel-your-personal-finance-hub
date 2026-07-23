@@ -137,6 +137,44 @@ export type BudgetLine = {
   planned_from_items: boolean;
 };
 
+export type MonthlyExpense = {
+  id: string;
+  name: string;
+  category_id: string | null;
+  default_amount: number;
+  currency: string;
+  active: boolean;
+  start_month: string | null;
+  end_month: string | null;
+  notes: string | null;
+  sort_order: number;
+};
+export type MonthlyExpenseInstance = {
+  id: string;
+  monthly_expense_id: string | null;
+  month: string;
+  name: string;
+  category_id: string | null;
+  category_name: string | null;
+  category_color: string | null;
+  planned_amount: number;
+  currency: string;
+  status: "pending" | "paid" | "paused" | "skipped";
+  transaction_id: string | null;
+  transaction_amount: number | null;
+  transaction_date: string | null;
+  is_ad_hoc: boolean;
+  notes: string | null;
+};
+export type BudgetGroup = {
+  category_id: string | null;
+  category_name: string;
+  category_color: string;
+  planned: number;
+  actual: number;
+  instances: MonthlyExpenseInstance[];
+};
+
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 const s = (v: unknown): string | null => (v == null ? null : String(v));
 const d = (v: unknown): string => {
