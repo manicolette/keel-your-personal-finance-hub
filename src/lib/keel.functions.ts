@@ -526,23 +526,23 @@ export const deleteConstant = createServerFn({ method: "POST" })
 
 // -------------------------- Recurring income --------------------------
 const incomeFrequency = z.enum(["weekly", "biweekly", "semimonthly", "monthly", "quarterly", "yearly"]);
-const incomeInput = z
-  .object({
-    name: z.string().min(1, "Name is required").max(80),
-    amount: z.coerce.number().nullable().optional(),
-    currency: z.string().min(1).max(8).default("USD"),
-    frequency: incomeFrequency,
-    next_date: z.string().min(10),
-    account_id: z.string().uuid().nullable().optional(),
-    category_id: z.string().uuid().nullable().optional(),
-    active: z.boolean().default(true),
-    notes: z.string().max(500).nullable().optional(),
-    anchor_date: z.string().min(10).nullable().optional(),
-    semimonthly_day_1: z.coerce.number().int().min(1).max(31).nullable().optional(),
-    semimonthly_day_2: z.coerce.number().int().min(1).max(31).nullable().optional(),
-    is_variable: z.boolean().default(false),
-  })
-  .superRefine((v, ctx) => {
+const incomeShape = {
+  name: z.string().min(1, "Name is required").max(80),
+  amount: z.coerce.number().nullable().optional(),
+  currency: z.string().min(1).max(8).default("USD"),
+  frequency: incomeFrequency,
+  next_date: z.string().min(10),
+  account_id: z.string().uuid().nullable().optional(),
+  category_id: z.string().uuid().nullable().optional(),
+  active: z.boolean().default(true),
+  notes: z.string().max(500).nullable().optional(),
+  anchor_date: z.string().min(10).nullable().optional(),
+  semimonthly_day_1: z.coerce.number().int().min(1).max(31).nullable().optional(),
+  semimonthly_day_2: z.coerce.number().int().min(1).max(31).nullable().optional(),
+  is_variable: z.boolean().default(false),
+};
+const incomeRefine = <T extends z.ZodTypeAny>(schema: T) =>
+  schema.superRefine((v: any, ctx) => {
     if (!v.is_variable && (v.amount == null || Number.isNaN(v.amount))) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["amount"], message: "Amount required unless variable" });
     }
@@ -554,6 +554,8 @@ const incomeInput = z
       }
     }
   });
+const incomeInput = incomeRefine(z.object(incomeShape));
+const incomeUpdateInput = incomeRefine(z.object({ ...incomeShape, id: z.string().uuid() }));
 
 function mapIncome(r: any): RecurringIncome {
   return {
