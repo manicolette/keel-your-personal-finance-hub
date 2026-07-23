@@ -1561,11 +1561,24 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async () =
   await requireUnlocked();
   const sql = await db();
 
+  // Materialize income for current + next month so upcoming widget shows real projected dates
+  // (biweekly + semimonthly need per-occurrence rows, not per-source).
+  const now = new Date();
+  const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  const nextDt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  const nextMonth = `${nextDt.getUTCFullYear()}-${String(nextDt.getUTCMonth() + 1).padStart(2, "0")}`;
+  await materializeIncomeMonth(sql, `${thisMonth}-01`);
+  await materializeIncomeMonth(sql, `${nextMonth}-01`);
+
   const [settingsRows, upcomingSubs, upcomingReminders, upcomingIncome, totals, live] = await Promise.all([
     sql`SELECT base_currency FROM app_settings LIMIT 1` as Promise<any[]>,
     sql`SELECT id, name, amount, currency, next_charge_date FROM subscriptions WHERE active = true ORDER BY next_charge_date LIMIT 5` as Promise<any[]>,
     sql`SELECT id, title, due_date, amount FROM reminders WHERE done = false ORDER BY due_date LIMIT 5` as Promise<any[]>,
-    sql`SELECT id, name, amount, currency, next_date FROM recurring_income WHERE active = true ORDER BY next_date LIMIT 5` as Promise<any[]>,
+    sql`
+      SELECT id, name_snapshot AS name, expected_amount AS amount, currency, expected_date, status
+      FROM income_instances
+      WHERE status = 'expected' AND expected_date >= CURRENT_DATE
+      ORDER BY expected_date LIMIT 8` as Promise<any[]>,
     sql`
       SELECT
         COALESCE(SUM(CASE WHEN kind = 'income' AND date_trunc('month', on_date) = date_trunc('month', CURRENT_DATE) THEN amount ELSE 0 END),0) AS income_mtd,
@@ -1589,9 +1602,9 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async () =
     upcomingIncome: upcomingIncome.map((r) => ({
       id: r.id as string,
       name: r.name as string,
-      amount: n(r.amount),
+      amount: r.amount == null ? null : n(r.amount),
       currency: r.currency as string,
-      next_date: d(r.next_date),
+      next_date: d(r.expected_date),
     })),
     upcomingReminders: upcomingReminders.map((r) => ({
       id: r.id as string,
