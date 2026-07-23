@@ -1,130 +1,114 @@
-# Keel — Feature Batch Plan
+# Monthly Expenses redesign
 
-All schema changes are **additive** (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS`). No drops, no recreates. Added to `SCHEMA_SQL` in `src/lib/db.server.ts` after existing block.
+Replaces the current `budget_line_items` (per-category, per-month, manual) with a Subscriptions-style **definitions** table plus a **per-month instance** table that snapshots what was planned/paid for each expense in each month. This is the core change: definitions describe the recurring intent; instances are the historical record.
 
-## 1. Debts — original balance, start date, paid-off state
-
-```sql
-ALTER TABLE debts ADD COLUMN IF NOT EXISTS original_balance numeric(14,2);
-ALTER TABLE debts ADD COLUMN IF NOT EXISTS start_date date;
-ALTER TABLE debts ADD COLUMN IF NOT EXISTS paid_off_at date;
-```
-
-- All three nullable. Existing debts keep working with no changes.
-- Progress bar renders only when `original_balance` AND `start_date` set: `(original_balance - balance) / original_balance`.
-- `paid_off_at` auto-set (server-side) when balance reaches ≤0 via a payment; cleared if balance goes back above 0.
-- Debts list splits into **Active** and **Paid off** sections with a collapse toggle for the latter.
-
-## 2. Debt payments table
+## Schema (additive migrations only)
 
 ```sql
-CREATE TABLE IF NOT EXISTS debt_payments (
+-- Definitions: one row per recurring monthly expense.
+CREATE TABLE IF NOT EXISTS monthly_expenses (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  debt_id uuid NOT NULL REFERENCES debts(id) ON DELETE CASCADE,
-  amount numeric(14,2) NOT NULL,
-  payment_date date NOT NULL,
-  note text,
-  account_id uuid REFERENCES accounts(id) ON DELETE SET NULL,
-  transaction_id uuid REFERENCES transactions(id) ON DELETE SET NULL,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS debt_payments_debt_date_idx ON debt_payments(debt_id, payment_date DESC);
-```
-
-Server functions (`keel.functions.ts`):
-- `listDebtPayments({debt_id})`
-- `createDebtPayment({debt_id, amount, payment_date, note?, account_id?, category_id?})` — in a single logical operation:
-  1. Insert payment row.
-  2. `UPDATE debts SET balance = balance - amount, paid_off_at = CASE WHEN balance - amount <= 0 THEN payment_date ELSE NULL END`.
-  3. If `account_id` provided: insert a matching `transactions` row (`kind='expense'`, amount, on_date, account_id, category_id, notes = `"Debt payment: <debt.name>"`), then update `debt_payments.transaction_id`.
-- `updateDebtPayment` / `deleteDebtPayment` — reverse the balance delta, cascade-delete the linked transaction if present, recompute `paid_off_at`.
-
-Multiple payments per month supported naturally (no unique constraint on month).
-
-UI: expandable "Payments" panel per debt row with log form + history list (edit/delete). Optional "Log as transaction from account…" picker + category picker.
-
-## 3. Budget named line items
-
-```sql
-CREATE TABLE IF NOT EXISTS budget_line_items (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  budget_line_id uuid NOT NULL REFERENCES budget_lines(id) ON DELETE CASCADE,
   name text NOT NULL,
-  amount numeric(14,2) NOT NULL DEFAULT 0,
+  category_id uuid REFERENCES categories(id) ON DELETE SET NULL,
+  default_amount numeric(14,2) NOT NULL DEFAULT 0,
+  currency text NOT NULL DEFAULT 'USD',
+  active boolean NOT NULL DEFAULT true,     -- false = deactivated, hidden from future months
+  start_month date,                         -- first month it applies (YYYY-MM-01); null = always
+  end_month date,                           -- last month it applies; null = ongoing
+  notes text,
   sort_order int NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS budget_line_items_line_idx ON budget_line_items(budget_line_id);
-```
 
-- Existing `budget_lines.planned` stays; when a line has ≥1 named items, server returns `planned = SUM(items.amount)` (computed, authoritative) and marks it read-only in the UI. Otherwise `planned` is user-editable as today.
-- Full CRUD on items. Collapsible per-category items panel on Budget page.
-- No drift possible: category total is always `SUM(items.amount)` when items exist.
-
-## 4. Transactions free-text search
-
-- Add `q` search param (URL) to `/transactions`; client-side `notes ILIKE '%q%'` via existing loaded list (already capped at 1000). Combines with date/account/category filters.
-
-## 5. Recurring income
-
-```sql
-CREATE TABLE IF NOT EXISTS recurring_income (
+-- Per-month instances: one row per (expense, month) once materialized.
+-- Also stores ad-hoc one-off items (monthly_expense_id = null, month + name + category set directly).
+CREATE TABLE IF NOT EXISTS monthly_expense_instances (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name text NOT NULL,
-  amount numeric(14,2) NOT NULL,
-  currency text NOT NULL DEFAULT 'USD',
-  frequency text NOT NULL CHECK (frequency IN ('weekly','monthly','quarterly','yearly')),
-  next_date date NOT NULL,
-  account_id uuid REFERENCES accounts(id) ON DELETE SET NULL,
+  monthly_expense_id uuid REFERENCES monthly_expenses(id) ON DELETE SET NULL,
+  month date NOT NULL,                      -- always YYYY-MM-01
+  name_snapshot text NOT NULL,              -- frozen at materialization; edits to def don't change past
   category_id uuid REFERENCES categories(id) ON DELETE SET NULL,
-  active boolean NOT NULL DEFAULT true,
+  planned_amount numeric(14,2) NOT NULL,    -- frozen snapshot; also holds one-month overrides
+  currency text NOT NULL DEFAULT 'USD',
+  status text NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','paid','paused','skipped')),
+  transaction_id uuid REFERENCES transactions(id) ON DELETE SET NULL,
+  is_ad_hoc boolean NOT NULL DEFAULT false,
   notes text,
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (monthly_expense_id, month)        -- one instance per definition per month
 );
+CREATE INDEX IF NOT EXISTS mei_month_idx ON monthly_expense_instances(month);
+CREATE INDEX IF NOT EXISTS mei_category_month_idx ON monthly_expense_instances(category_id, month);
+CREATE INDEX IF NOT EXISTS mei_txn_idx ON monthly_expense_instances(transaction_id);
 ```
 
-- New `/income` route mirroring Subscriptions shape.
-- "Log received" button on each row → creates income transaction, advances `next_date` by frequency.
-- Dashboard "Income (MTD)" already sums real transactions; recurring income shows a separate "Upcoming income" card.
+`budget_line_items` is left in place (unused by the new UI) rather than dropped — additive-only rule.
 
-## 6. FX Rates → Net Worth (wire it in)
+## How the pieces interact
 
-Currently FX Rates are stored but unused. Fix:
+- **Definitions** (`monthly_expenses`) = the "Rent, Internet, Car Insurance" list. Edited on a new `/monthly-expenses` route, styled like `/subscriptions`.
+- **Instances** (`monthly_expense_instances`) = the frozen per-month snapshot. Created lazily the first time a month is viewed (or when the user acts on it). Once created, edits to the definition never mutate it.
+- **Historical safety**: past months read only their instance rows. Editing a definition today changes `default_amount`, but September's instance still holds `planned_amount=600` even after October's edit sets it to 650.
+- **Ad-hoc items**: `is_ad_hoc = true`, `monthly_expense_id = null`. Live in the same table so the Budget page renders one unified list per category.
 
-- Server helper `convertToBase(amount, from, base, ratesMap)` picking the **latest** `fx_rates.as_of` per pair; identity when `from === base`; if no rate found, fall back to raw amount and flag `unconverted: true` in response.
-- `getDashboard` net-worth calc + `/networth` snapshot creator: sum `accounts.opening_balance + transactions delta` converted to `app_settings.base_currency`.
-- UI on Net Worth: shows unified total in base currency + a small "N accounts unconverted (missing FX rate)" warning if any.
+### Materialization rule (server-side, in `getBudget(month)`)
 
-Test: create USD account $1000, EUR account €500, FX rate EUR→USD 1.10 → total should be $1550.
+For the requested `month`:
+1. Load existing instances for that month.
+2. Load active definitions where `start_month <= month` (or null) and (`end_month >= month` or null) and no instance yet for that (def, month).
+3. For each missing one, insert an instance with `planned_amount = default_amount`, `name_snapshot = name`, `category_id`, `status = 'pending'`.
+4. Return instances grouped by category. Category `planned` total = `SUM(planned_amount)` over its instances (excluding `status='paused'|'skipped'`). Category `actual` stays as it is today (sum of transactions).
 
-## 7. Receipt attachments on transactions
+Only materializes the currently viewed month, so viewing "August 2027" doesn't fill in every month between now and then.
 
-```sql
-ALTER TABLE transactions ADD COLUMN IF NOT EXISTS receipt_url text;
-```
+### Editing semantics (matches user's requirements point-by-point)
 
-- Vercel Blob via `@vercel/blob`. Needs `BLOB_READ_WRITE_TOKEN` env var.
-- New server route `POST /api/public/upload-receipt` (auth-gated via session cookie check inside handler — not truly public) returns `{url}`.
-- Optional file input in transaction create/edit form; small thumbnail + "Remove" in the row. Skipped entirely if no token configured (form hides the field, logs a one-time console note).
+- **Rename / recategorize / change amount** on a definition → updates definition only. Future months materialize with the new values; already-materialized instances stay frozen.
+- **One-month override** → edit the instance's `planned_amount` directly (on the Budget page). Definition untouched.
+- **Pause for one month** → set instance `status='paused'`. Still visible on that month's Budget with a "Paused" badge; excluded from planned total. Definition still materializes normal instances in other months.
+- **Deactivate** definition → `active=false`. Stops materializing new months. Existing instances remain.
+- **Delete** definition → `ON DELETE SET NULL` on instances keeps history intact; instance rows survive with `monthly_expense_id=null` and their frozen snapshot.
+- **Link / unlink transaction** → set/clear `transaction_id` and flip `status` between `paid`/`pending`. Manual only — no auto-matching.
+
+## Server functions (in `keel.functions.ts`)
+
+Definitions CRUD:
+- `listMonthlyExpenses()`, `createMonthlyExpense`, `updateMonthlyExpense`, `deleteMonthlyExpense`
+
+Per-month instance ops:
+- `getBudget({month})` — extended: materializes + returns instances grouped by category alongside existing budget lines.
+- `updateExpenseInstance({id, planned_amount?, status?, notes?})` — for overrides and pause.
+- `createAdHocExpense({month, name, category_id, planned_amount})` — one-off item for a specific month.
+- `deleteExpenseInstance({id})` — removes a materialized instance (ad-hoc, or "not this month" for a definition; next view re-materializes unless status was paused).
+- `linkTransactionToExpense({instance_id, transaction_id})` / `unlinkTransactionFromExpense({instance_id})`.
+
+Transactions form gets a new optional field: "Pays which Monthly Expense?" — a dropdown of the current-month unpaid instances. On save, links + flips to `paid`.
+
+## UI
+
+- **New `/monthly-expenses` route** — Subscriptions-shaped list: name, category, default amount, active toggle, edit/delete. Primary way to add recurring expenses. Linked from side + bottom nav.
+- **`/budget`** — reshaped around the question "what am I expected to pay this month, and what's paid?" For each category card:
+  - Header: name + planned (sum of active instances) + actual (from transactions).
+  - Rows: each instance with name, planned amount, status pill (Pending / Paid / Paused), linked transaction amount + date if any, and inline actions (override amount, pause, link txn, unlink, delete if ad-hoc).
+  - Footer: small secondary "+ Add one-off item" button (ad-hoc). Deliberately subdued vs. the Monthly Expenses list.
+- **Transactions create/edit form** — new optional "Pays Monthly Expense" select (current-month pending instances).
 
 ## Build order
 
-1. Migration additions (all in one block).
-2. `keel.functions.ts` — new server fns for payments, line items, recurring income, upload.
-3. FX conversion helper + wire into dashboard/networth server fns.
-4. UI: Debts (progress, payments, paid-off split), Budget (line items), Transactions (search + receipt), new Income route, Net Worth (unified total).
-5. Nav links.
-6. Verify: build, then Playwright smoke — Debts: two payments same month → balance + payoff drop; Budget: sum matches items; FX: mixed-currency total math; receipt upload skipped gracefully if no token.
-
-## Env vars
-
-- New: `BLOB_READ_WRITE_TOKEN` (Vercel Blob). Only needed for receipts; everything else works without it.
+1. Migration additions.
+2. Server fns: definitions CRUD, materialization inside `getBudget`, instance mutations, link/unlink.
+3. `/monthly-expenses` route.
+4. Rework `/budget` around instances; remove the current per-month `BudgetLineCard` line-item UI (`budget_line_items` table stays orphaned, table not dropped).
+5. Transactions form: add expense-link dropdown.
+6. Nav links.
+7. Playwright end-to-end: (a) add "Rent $600" definition → appears in Jul, Aug, Sep automatically; (b) override Aug to $650, confirm Jul/Sep unchanged; (c) edit definition to $700, confirm Jul/Aug/Sep instances unchanged, Oct materializes at $700; (d) pause Sep, confirm excluded from Sep total but still listed; (e) link a transaction from `/transactions` form, confirm status flips to Paid with actual amount shown; (f) unlink, confirm reverts to Pending.
 
 ## Assumptions to confirm
 
-- **Base currency for Net Worth** = `app_settings.base_currency` (default USD, already in schema). OK to use.
-- **Debt payments UI** lives inside the existing Debts page (expandable per row), not a new route. OK?
-- **Receipt storage:** Vercel Blob only (no S3/local fallback). OK?
-- **Budget line items:** when a category has items, `planned` becomes read-only (sum of items). User edits items directly, not the total. OK?
+- **Materialization is lazy** (on first `getBudget` for a month), not eager for all future months. Backfilling old months you haven't visited yet: on first view, they materialize using today's definition values — acceptable because there's no prior snapshot to preserve. OK?
+- **Deleting a definition** keeps historical instances intact (via `ON DELETE SET NULL`). They still render with their `name_snapshot`. OK, or would you rather deletions cascade and wipe history?
+- **`budget_line_items` table** stays in the DB unused (additive rule) but the UI for it is removed. OK?
+- **Definition scope window** (`start_month` / `end_month`): both optional, both nullable. Empty = "applies to every month." OK?
 
 Reply "go" to build, or edit any of the four assumptions.
