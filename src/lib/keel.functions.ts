@@ -1060,8 +1060,87 @@ export const getBudget = createServerFn({ method: "GET" })
       }
     }
 
+    // ---- Monthly Expenses: materialize instances for this month ----
+    await sql`
+      INSERT INTO monthly_expense_instances
+        (monthly_expense_id, month, name_snapshot, category_id, planned_amount, currency, status, is_ad_hoc)
+      SELECT me.id, ${monthDate}::date, me.name, me.category_id, me.default_amount, me.currency, 'pending', false
+      FROM monthly_expenses me
+      WHERE me.active = true
+        AND (me.start_month IS NULL OR me.start_month <= ${monthDate}::date)
+        AND (me.end_month IS NULL OR me.end_month >= ${monthDate}::date)
+      ON CONFLICT (monthly_expense_id, month) WHERE monthly_expense_id IS NOT NULL DO NOTHING`;
+
+    const instanceRows = (await sql`
+      SELECT mei.id, mei.monthly_expense_id, mei.month, mei.name_snapshot, mei.category_id,
+             mei.planned_amount, mei.currency, mei.status, mei.transaction_id, mei.is_ad_hoc, mei.notes,
+             c.name AS category_name, c.color AS category_color,
+             t.amount AS tx_amount, t.on_date AS tx_date
+      FROM monthly_expense_instances mei
+      LEFT JOIN categories c ON c.id = mei.category_id
+      LEFT JOIN transactions t ON t.id = mei.transaction_id
+      WHERE mei.month = ${monthDate}::date
+      ORDER BY c.sort_order NULLS LAST, c.name NULLS LAST, mei.name_snapshot`) as any[];
+
+    const instances: MonthlyExpenseInstance[] = instanceRows.map((r) => ({
+      id: r.id,
+      monthly_expense_id: r.monthly_expense_id,
+      month: d(r.month),
+      name: r.name_snapshot,
+      category_id: r.category_id,
+      category_name: r.category_name,
+      category_color: r.category_color,
+      planned_amount: n(r.planned_amount),
+      currency: r.currency,
+      status: r.status,
+      transaction_id: r.transaction_id,
+      transaction_amount: r.tx_amount == null ? null : n(r.tx_amount),
+      transaction_date: r.tx_date == null ? null : d(r.tx_date),
+      is_ad_hoc: !!r.is_ad_hoc,
+      notes: s(r.notes),
+    }));
+
+    // Actuals-per-category from transactions this month.
+    const actualsRows = (await sql`
+      SELECT category_id, COALESCE(SUM(amount),0) AS total
+      FROM transactions
+      WHERE kind = 'expense'
+        AND date_trunc('month', on_date) = date_trunc('month', ${monthDate}::date)
+      GROUP BY category_id`) as any[];
+    const actualByCat = new Map<string | null, number>();
+    for (const r of actualsRows) actualByCat.set(r.category_id, n(r.total));
+
+    // All expense categories (so a category with no instances/actuals still shows up if desired).
+    const allCatsRows = (await sql`SELECT id, name, color, sort_order FROM categories WHERE kind = 'expense' AND archived = false ORDER BY sort_order, name`) as any[];
+
+    const groupMap = new Map<string | null, BudgetGroup>();
+    const upsertGroup = (id: string | null, name: string, color: string) => {
+      if (!groupMap.has(id)) groupMap.set(id, { category_id: id, category_name: name, category_color: color, planned: 0, actual: 0, instances: [] });
+      return groupMap.get(id)!;
+    };
+
+    for (const inst of instances) {
+      const g = upsertGroup(inst.category_id, inst.category_name ?? "Uncategorized", inst.category_color ?? "#94a3b8");
+      g.instances.push(inst);
+      if (inst.status !== "paused" && inst.status !== "skipped") g.planned += inst.planned_amount;
+    }
+    for (const [catId, total] of actualByCat) {
+      const cat = allCatsRows.find((c) => c.id === catId);
+      const g = upsertGroup(catId, cat?.name ?? "Uncategorized", cat?.color ?? "#94a3b8");
+      g.actual = total;
+    }
+
+    const groups = Array.from(groupMap.values()).sort((a, b) => {
+      if (a.category_id === null) return 1;
+      if (b.category_id === null) return -1;
+      const ai = allCatsRows.findIndex((c) => c.id === a.category_id);
+      const bi = allCatsRows.findIndex((c) => c.id === b.category_id);
+      return (ai < 0 ? 1e9 : ai) - (bi < 0 ? 1e9 : bi);
+    });
+
     return {
       month,
+      groups,
       lines: lines.map((r: any) => {
         const items = itemsByLine.get(r.id) ?? [];
         const hasItems = items.length > 0;
