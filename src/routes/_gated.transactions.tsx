@@ -175,7 +175,7 @@ function TransactionsPage() {
             </Select>
           </label>
           {(from || to || account || category || q) && (
-            <Button size="sm" variant="ghost" onClick={() => navigate({ search: { from: "", to: "", account: "", category: "", q: "" } })}>Clear</Button>
+            <Button size="sm" variant="ghost" onClick={() => navigate({ to: "/transactions", search: { from: "", to: "", account: "", category: "", q: "" } })}>Clear</Button>
           )}
           <div className="ml-auto text-xs text-muted-foreground tabular-nums">{txs.length} of {allTxs.length}</div>
         </div>
