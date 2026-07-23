@@ -19,6 +19,7 @@ import {
   PieChart,
   Globe,
   Bell,
+  ListChecks,
   Settings as SettingsIcon,
   Lock,
 } from "lucide-react";
