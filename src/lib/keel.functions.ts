@@ -57,7 +57,37 @@ export type ConstantItem = {
   active: boolean;
   notes: string | null;
 };
-export type RecurringIncome = ConstantItem;
+export type RecurringIncome = {
+  id: string;
+  name: string;
+  amount: number | null;
+  currency: string;
+  frequency: "weekly" | "biweekly" | "semimonthly" | "monthly" | "quarterly" | "yearly";
+  next_date: string;
+  account_id: string | null;
+  category_id: string | null;
+  active: boolean;
+  notes: string | null;
+  anchor_date: string | null;
+  semimonthly_day_1: number | null;
+  semimonthly_day_2: number | null;
+  is_variable: boolean;
+};
+export type IncomeInstance = {
+  id: string;
+  recurring_income_id: string | null;
+  expected_date: string;
+  name: string;
+  expected_amount: number | null;
+  currency: string;
+  status: "expected" | "received" | "skipped";
+  transaction_id: string | null;
+  received_amount: number | null;
+  transaction_date: string | null;
+  notes: string | null;
+  frequency: RecurringIncome["frequency"] | null;
+  is_variable: boolean;
+};
 export type Debt = {
   id: string;
   name: string;
