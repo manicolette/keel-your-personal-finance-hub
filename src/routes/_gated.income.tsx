@@ -127,6 +127,7 @@ function IncomePage() {
     name: "", amount: 0, currency: "USD", frequency: "monthly", next_date: today(),
     account_id: null, category_id: null, active: true, notes: "",
     anchor_date: null, semimonthly_day_1: 1, semimonthly_day_2: 15, is_variable: false,
+    start_date: null, end_date: null,
   };
   const formOpen = showForm || !!editing;
 
@@ -189,6 +190,8 @@ function IncomePage() {
                 semimonthly_day_1: freq === "semimonthly" ? Number(fd.get("semimonthly_day_1") || 1) : null,
                 semimonthly_day_2: freq === "semimonthly" ? Number(fd.get("semimonthly_day_2") || 15) : null,
                 is_variable: isVariable,
+                start_date: String(fd.get("start_date") || "") || null,
+                end_date: String(fd.get("end_date") || "") || null,
               };
               if (editing) mUpdate.mutate({ data: { ...payload, id: editing.id } });
               else mCreate.mutate({ data: payload });
@@ -240,6 +243,12 @@ function IncomePage() {
                 </Field>
               </>
             )}
+            <Field label="Start date" hint="No instances materialize before this date. Leave blank for no lower bound.">
+              <TextInput type="date" name="start_date" defaultValue={initial.start_date ?? ""} />
+            </Field>
+            <Field label="End date (optional)" hint="No instances materialize after this date. Leave blank to continue indefinitely.">
+              <TextInput type="date" name="end_date" defaultValue={initial.end_date ?? ""} />
+            </Field>
             <Field label="Deposit to account">
               <Select name="account_id" defaultValue={initial.account_id ?? ""}>
                 <option value="">— none —</option>

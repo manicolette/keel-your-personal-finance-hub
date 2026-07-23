@@ -72,6 +72,8 @@ export type RecurringIncome = {
   semimonthly_day_1: number | null;
   semimonthly_day_2: number | null;
   is_variable: boolean;
+  start_date: string | null;
+  end_date: string | null;
 };
 export type IncomeInstance = {
   id: string;
@@ -540,6 +542,8 @@ const incomeShape = {
   semimonthly_day_1: z.coerce.number().int().min(1).max(31).nullable().optional(),
   semimonthly_day_2: z.coerce.number().int().min(1).max(31).nullable().optional(),
   is_variable: z.boolean().default(false),
+  start_date: z.string().min(10).nullable().optional(),
+  end_date: z.string().min(10).nullable().optional(),
 };
 const incomeRefine = <T extends z.ZodTypeAny>(schema: T) =>
   schema.superRefine((v: any, ctx) => {
@@ -573,6 +577,8 @@ function mapIncome(r: any): RecurringIncome {
     semimonthly_day_1: r.semimonthly_day_1 == null ? null : Number(r.semimonthly_day_1),
     semimonthly_day_2: r.semimonthly_day_2 == null ? null : Number(r.semimonthly_day_2),
     is_variable: !!r.is_variable,
+    start_date: dOrNull(r.start_date),
+    end_date: dOrNull(r.end_date),
   };
 }
 
@@ -581,7 +587,7 @@ export const listRecurringIncome = createServerFn({ method: "GET" }).handler(asy
   const sql = await db();
   const rows = (await sql`
     SELECT id, name, amount, currency, frequency, next_date, account_id, category_id, active, notes,
-           anchor_date, semimonthly_day_1, semimonthly_day_2, is_variable
+           anchor_date, semimonthly_day_1, semimonthly_day_2, is_variable, start_date, end_date
     FROM recurring_income ORDER BY name`) as any[];
   return rows.map(mapIncome);
 });
@@ -598,10 +604,11 @@ export const createRecurringIncome = createServerFn({ method: "POST" })
       const rows = (await sql`
         INSERT INTO recurring_income
           (name, amount, currency, frequency, next_date, account_id, category_id, active, notes,
-           anchor_date, semimonthly_day_1, semimonthly_day_2, is_variable)
+           anchor_date, semimonthly_day_1, semimonthly_day_2, is_variable, start_date, end_date)
         VALUES (${data.name}, ${amt}, ${data.currency}, ${data.frequency}, ${data.next_date},
                 ${data.account_id ?? null}, ${data.category_id ?? null}, ${data.active}, ${data.notes ?? null},
-                ${anchor}, ${data.semimonthly_day_1 ?? null}, ${data.semimonthly_day_2 ?? null}, ${data.is_variable})
+                ${anchor}, ${data.semimonthly_day_1 ?? null}, ${data.semimonthly_day_2 ?? null}, ${data.is_variable},
+                ${data.start_date ?? null}, ${data.end_date ?? null})
         RETURNING id`) as any[];
       return { id: rows[0].id as string };
     } catch (err) {
@@ -625,8 +632,26 @@ export const updateRecurringIncome = createServerFn({ method: "POST" })
           anchor_date = ${anchor},
           semimonthly_day_1 = ${data.semimonthly_day_1 ?? null},
           semimonthly_day_2 = ${data.semimonthly_day_2 ?? null},
-          is_variable = ${data.is_variable}
+          is_variable = ${data.is_variable},
+          start_date = ${data.start_date ?? null},
+          end_date = ${data.end_date ?? null}
         WHERE id = ${data.id}`;
+      // Purge stale, unpaid instances that fall outside the new start/end window
+      // so previously-materialized months don't show ghost rows.
+      if (data.start_date) {
+        await sql`DELETE FROM income_instances
+          WHERE recurring_income_id = ${data.id}
+            AND expected_date < ${data.start_date}
+            AND transaction_id IS NULL
+            AND status = 'expected'`;
+      }
+      if (data.end_date) {
+        await sql`DELETE FROM income_instances
+          WHERE recurring_income_id = ${data.id}
+            AND expected_date > ${data.end_date}
+            AND transaction_id IS NULL
+            AND status = 'expected'`;
+      }
       return { ok: true };
     } catch (err) {
       throw new Error(`Failed to update income source: ${(err as Error).message}`);
@@ -762,9 +787,11 @@ export function enumerateIncomeDatesInMonth(inc: {
 // -------------------------- Income instances --------------------------
 async function materializeIncomeMonth(sqlAny: any, monthIso: string): Promise<void> {
   const sources = (await sqlAny`
-    SELECT id, name, currency, frequency, next_date, amount, anchor_date, semimonthly_day_1, semimonthly_day_2, is_variable
+    SELECT id, name, currency, frequency, next_date, amount, anchor_date, semimonthly_day_1, semimonthly_day_2, is_variable, start_date, end_date
     FROM recurring_income WHERE active = true`) as any[];
   for (const src of sources) {
+    const startDate = src.start_date ? d(src.start_date) : null;
+    const endDate = src.end_date ? d(src.end_date) : null;
     const dates = enumerateIncomeDatesInMonth(
       {
         frequency: src.frequency,
@@ -774,7 +801,7 @@ async function materializeIncomeMonth(sqlAny: any, monthIso: string): Promise<vo
         semimonthly_day_2: src.semimonthly_day_2 == null ? null : Number(src.semimonthly_day_2),
       },
       monthIso,
-    );
+    ).filter((iso) => (!startDate || iso >= startDate) && (!endDate || iso <= endDate));
     for (const dateIso of dates) {
       const expectedAmt = src.is_variable ? null : (src.amount == null ? null : n(src.amount));
       // Rely on the partial unique index (recurring_income_id, expected_date).

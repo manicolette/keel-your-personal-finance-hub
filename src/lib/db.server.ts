@@ -248,6 +248,8 @@ ALTER TABLE recurring_income ADD COLUMN IF NOT EXISTS semimonthly_day_1 int;
 ALTER TABLE recurring_income ADD COLUMN IF NOT EXISTS semimonthly_day_2 int;
 ALTER TABLE recurring_income ADD COLUMN IF NOT EXISTS is_variable boolean NOT NULL DEFAULT false;
 ALTER TABLE recurring_income ALTER COLUMN amount DROP NOT NULL;
+ALTER TABLE recurring_income ADD COLUMN IF NOT EXISTS start_date date;
+ALTER TABLE recurring_income ADD COLUMN IF NOT EXISTS end_date date;
 
 -- Additive: per-occurrence income instances (Expected → Received).
 CREATE TABLE IF NOT EXISTS income_instances (
