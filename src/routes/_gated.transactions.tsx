@@ -48,9 +48,9 @@ function TransactionsPage() {
   const { data: accts } = useSuspenseQuery(acctQuery);
   const { data: cats } = useSuspenseQuery(catQuery);
   const { from, to, account, category, q } = Route.useSearch();
-  const navigate = useNavigate({ from: "/_gated/transactions" });
+  const navigate = useNavigate();
   const setFilter = (patch: Partial<{ from: string; to: string; account: string; category: string; q: string }>) =>
-    navigate({ search: (prev: { from: string; to: string; account: string; category: string; q: string }) => ({ ...prev, ...patch }) });
+    navigate({ to: "/transactions", search: (prev: { from: string; to: string; account: string; category: string; q: string }) => ({ ...prev, ...patch }) });
   const qLower = q.trim().toLowerCase();
   const txs = allTxs.filter((t) => {
     if (from && t.on_date < from) return false;
