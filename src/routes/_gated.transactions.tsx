@@ -1,16 +1,19 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { zodValidator, fallback } from "@tanstack/zod-adapter";
 import { z } from "zod";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   createTransaction,
   deleteTransaction,
+  linkTransactionToInstance,
   listAccounts,
   listCategories,
+  listMonthInstances,
   listTransactions,
+  unlinkInstance,
   updateTransaction,
   type Transaction,
 } from "@/lib/keel.functions";
@@ -42,6 +45,7 @@ export const Route = createFileRoute("/_gated/transactions")({
 });
 
 const today = () => new Date().toISOString().slice(0, 10);
+const monthOf = (dateStr: string) => (dateStr && dateStr.length >= 7 ? dateStr.slice(0, 7) : new Date().toISOString().slice(0, 7));
 
 function TransactionsPage() {
   const { data: allTxs } = useSuspenseQuery(txQuery);
@@ -64,24 +68,68 @@ function TransactionsPage() {
   const create = useServerFn(createTransaction);
   const update = useServerFn(updateTransaction);
   const remove = useServerFn(deleteTransaction);
+  const linkFn = useServerFn(linkTransactionToInstance);
+  const unlinkFn = useServerFn(unlinkInstance);
   const [editing, setEditing] = useState<Transaction | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
+  const [formDate, setFormDate] = useState<string>(today());
+  const [linkInstanceId, setLinkInstanceId] = useState<string>("");
+  const [initialLinkId, setInitialLinkId] = useState<string>("");
+
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["transactions"] });
     qc.invalidateQueries({ queryKey: ["dashboard"] });
     qc.invalidateQueries({ queryKey: ["budget"] });
   };
 
+  const formMonth = monthOf(formDate);
+  const instancesQ = useQuery({
+    queryKey: ["month_instances", formMonth],
+    queryFn: () => listMonthInstances({ data: { month: formMonth } }),
+    enabled: showForm || !!editing,
+  });
+  const instances = instancesQ.data ?? [];
+
+  // Applies the link/unlink delta after a create/update succeeds.
+  async function applyLinkDelta(txId: string) {
+    if (linkInstanceId === initialLinkId) return;
+    try {
+      if (linkInstanceId) {
+        await linkFn({ data: { instance_id: linkInstanceId, transaction_id: txId } });
+      } else if (initialLinkId) {
+        await unlinkFn({ data: { id: initialLinkId } });
+      }
+    } catch (e) {
+      toast.error(`Linked, but failed to update Monthly Expense: ${(e as Error).message}`);
+    }
+  }
+
   const mCreate = useMutation({
     mutationFn: create,
-    onSuccess: () => { toast.success("Transaction added"); invalidate(); setShowForm(false); setReceiptUrl(null); },
+    onSuccess: async ({ id }) => {
+      await applyLinkDelta(id);
+      toast.success("Transaction added");
+      invalidate();
+      setShowForm(false);
+      setReceiptUrl(null);
+      setLinkInstanceId("");
+      setInitialLinkId("");
+    },
     onError: (e: Error) => toast.error(e.message),
   });
   const mUpdate = useMutation({
     mutationFn: update,
-    onSuccess: () => { toast.success("Saved"); invalidate(); setEditing(null); setReceiptUrl(null); },
+    onSuccess: async (_res, vars) => {
+      await applyLinkDelta((vars as any).data.id);
+      toast.success("Saved");
+      invalidate();
+      setEditing(null);
+      setReceiptUrl(null);
+      setLinkInstanceId("");
+      setInitialLinkId("");
+    },
     onError: (e: Error) => toast.error(e.message),
   });
   const mDelete = useMutation({
@@ -93,14 +141,45 @@ function TransactionsPage() {
   const acctName = (id: string | null) => (id ? accts.find((a) => a.id === id)?.name ?? "—" : "—");
   const catName = (id: string | null) => (id ? cats.find((c) => c.id === id)?.name ?? "—" : "—");
 
-  const openForEdit = (t: Transaction) => { setEditing(t); setShowForm(false); setReceiptUrl(t.receipt_url); };
-  const openForCreate = () => { setShowForm(true); setEditing(null); setReceiptUrl(null); };
+  const openForEdit = (t: Transaction) => {
+    setEditing(t);
+    setShowForm(false);
+    setReceiptUrl(t.receipt_url);
+    setFormDate(t.on_date);
+    // Fetch will populate instances; we set the initial link after data lands (see effect-less pattern below).
+    setLinkInstanceId("");
+    setInitialLinkId("");
+  };
+  const openForCreate = () => {
+    setEditing(null);
+    setShowForm(true);
+    setReceiptUrl(null);
+    setFormDate(today());
+    setLinkInstanceId("");
+    setInitialLinkId("");
+  };
+
+  // Once instances load for the editing tx, pre-select the linked one.
+  const preLinked = useMemo(() => {
+    if (!editing) return "";
+    return instances.find((i) => i.transaction_id === editing.id)?.id ?? "";
+  }, [editing, instances]);
+  if (editing && preLinked && preLinked !== initialLinkId && linkInstanceId === "" && initialLinkId === "") {
+    // one-shot sync when instance data arrives
+    setInitialLinkId(preLinked);
+    setLinkInstanceId(preLinked);
+  }
 
   const initial: Partial<Transaction> = editing ?? {
     on_date: today(), account_id: accts[0]?.id, category_id: null, kind: "expense",
     amount: 0, currency: accts[0]?.currency ?? "USD", notes: "", transfer_account_id: null, receipt_url: null,
   };
   const formOpen = showForm || !!editing;
+
+  // Which instances are selectable: unpaid ones for this month + the currently-linked one (even if paid).
+  const selectableInstances = instances.filter(
+    (i) => i.status === "pending" || i.id === initialLinkId,
+  );
 
   async function handleUpload(file: File) {
     setUploading(true);
@@ -201,7 +280,12 @@ function TransactionsPage() {
             if (editing) mUpdate.mutate({ data: { ...payload, id: editing.id } });
             else mCreate.mutate({ data: payload });
           }}>
-            <Field label="Date"><TextInput type="date" name="on_date" defaultValue={initial.on_date} required /></Field>
+            <Field label="Date">
+              <TextInput
+                type="date" name="on_date" defaultValue={initial.on_date} required
+                onChange={(e) => setFormDate(e.target.value || today())}
+              />
+            </Field>
             <Field label="Kind">
               <Select name="kind" defaultValue={initial.kind}>
                 <option value="expense">expense</option>
@@ -228,6 +312,19 @@ function TransactionsPage() {
               </Select>
             </Field>
             <Field label="Currency"><TextInput name="currency" defaultValue={initial.currency} /></Field>
+            <div className="sm:col-span-2">
+              <Field label={`Pays Monthly Expense (${formMonth})`} hint="Manually link this transaction to a planned monthly expense.">
+                <Select value={linkInstanceId} onChange={(e) => setLinkInstanceId(e.target.value)}>
+                  <option value="">— don't link —</option>
+                  {selectableInstances.map((i) => (
+                    <option key={i.id} value={i.id}>
+                      {i.name} · {i.category_name ?? "Uncategorized"} · planned {money(i.planned_amount, i.currency)}
+                      {i.id === initialLinkId ? " (currently linked)" : ""}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
             <div className="sm:col-span-2 lg:col-span-3">
               <Field label="Notes"><Textarea name="notes" defaultValue={initial.notes ?? ""} /></Field>
             </div>
@@ -254,7 +351,7 @@ function TransactionsPage() {
               </Field>
             </div>
             <div className="col-span-full flex justify-end gap-2 pt-1">
-              <Button variant="ghost" type="button" onClick={() => { setShowForm(false); setEditing(null); setReceiptUrl(null); }}>Cancel</Button>
+              <Button variant="ghost" type="button" onClick={() => { setShowForm(false); setEditing(null); setReceiptUrl(null); setLinkInstanceId(""); setInitialLinkId(""); }}>Cancel</Button>
               <Button type="submit" disabled={mCreate.isPending || mUpdate.isPending}>{editing ? "Save" : "Create"}</Button>
             </div>
           </form>
