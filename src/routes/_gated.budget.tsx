@@ -4,12 +4,17 @@ import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@ta
 import { useServerFn } from "@tanstack/react-start";
 import { zodValidator, fallback } from "@tanstack/zod-adapter";
 import { z } from "zod";
+import { useState } from "react";
 import { toast } from "sonner";
 import {
+  createBudgetLineItem,
   deleteBudgetLine,
+  deleteBudgetLineItem,
   getBudget,
   listCategories,
+  updateBudgetLineItem,
   upsertBudgetLine,
+  type BudgetLine,
 } from "@/lib/keel.functions";
 import { Button, Card, EmptyState, PageHeader, Select, Table, Td, TextInput, Th, money } from "@/components/keel-ui";
 
@@ -101,7 +106,6 @@ function BudgetPage() {
           </div>
         } />
 
-
       <div className="grid gap-3 sm:grid-cols-3">
         <Card>
           <div className="text-xs uppercase tracking-wide text-muted-foreground">Planned</div>
@@ -147,46 +151,130 @@ function BudgetPage() {
       {data.lines.length === 0 ? (
         <EmptyState>No budget lines for {month} yet. Add expense categories above.</EmptyState>
       ) : (
-        <Table head={<>
-          <Th>Category</Th><Th className="text-right">Planned</Th>
-          <Th className="text-right">Actual</Th><Th>Usage</Th><Th></Th>
-        </>}>
-          {data.lines.map((l) => {
-            const pct = l.planned > 0 ? Math.min(150, Math.round((l.actual / l.planned) * 100)) : 0;
-            const over = l.actual > l.planned;
-            return (
-              <tr key={l.id}>
-                <Td>
-                  <div className="flex items-center gap-2">
-                    <span className="inline-block h-3 w-3 rounded-full" style={{ background: l.category_color }} />
-                    <span className="font-medium">{l.category_name}</span>
-                  </div>
-                </Td>
-                <Td className="text-right">
-                  <input
-                    type="number" step="0.01"
-                    defaultValue={l.planned}
-                    onBlur={(e) => {
-                      const val = Number(e.target.value);
-                      if (val !== l.planned) mUpsert.mutate({ data: { month_id: data.month.id, category_id: l.category_id, planned: val, notes: l.notes } });
-                    }}
-                    className="w-28 rounded-md border border-input bg-background px-2 py-1 text-right text-sm tabular-nums"
-                  />
-                </Td>
-                <Td className={`text-right tabular-nums ${over ? "text-[color:var(--negative)]" : ""}`}>{money(l.actual)}</Td>
-                <Td>
-                  <div className="h-2 w-32 overflow-hidden rounded-full bg-muted">
-                    <div className={`h-full ${over ? "bg-[color:var(--negative)]" : "bg-primary"}`} style={{ width: `${Math.min(100, pct)}%` }} />
-                  </div>
-                </Td>
-                <Td className="text-right">
-                  <Button size="sm" variant="danger" onClick={() => confirm(`Remove ${l.category_name} from this month?`) && mDelete.mutate({ data: { id: l.id } })}>×</Button>
-                </Td>
-              </tr>
-            );
-          })}
-        </Table>
+        <div className="space-y-3">
+          {data.lines.map((l) => (
+            <BudgetLineCard
+              key={l.id}
+              line={l}
+              monthId={data.month.id}
+              onUpsertPlanned={(val) => mUpsert.mutate({ data: { month_id: data.month.id, category_id: l.category_id, planned: val, notes: l.notes } })}
+              onRemove={() => confirm(`Remove ${l.category_name} from this month?`) && mDelete.mutate({ data: { id: l.id } })}
+              invalidate={invalidate}
+            />
+          ))}
+        </div>
       )}
     </div>
+  );
+}
+
+function BudgetLineCard({
+  line, onUpsertPlanned, onRemove, invalidate,
+}: {
+  line: BudgetLine;
+  monthId: string;
+  onUpsertPlanned: (val: number) => void;
+  onRemove: () => void;
+  invalidate: () => void;
+}) {
+  const [expanded, setExpanded] = useState(line.items.length > 0);
+  const createItem = useServerFn(createBudgetLineItem);
+  const updateItem = useServerFn(updateBudgetLineItem);
+  const deleteItem = useServerFn(deleteBudgetLineItem);
+  const mCreate = useMutation({ mutationFn: createItem, onSuccess: () => { toast.success("Item added"); invalidate(); }, onError: (e: Error) => toast.error(e.message) });
+  const mUpdate = useMutation({ mutationFn: updateItem, onSuccess: () => invalidate(), onError: (e: Error) => toast.error(e.message) });
+  const mDelete = useMutation({ mutationFn: deleteItem, onSuccess: () => { toast.success("Removed"); invalidate(); }, onError: (e: Error) => toast.error(e.message) });
+
+  const pct = line.planned > 0 ? Math.min(150, Math.round((line.actual / line.planned) * 100)) : 0;
+  const over = line.actual > line.planned;
+
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center gap-3">
+        <button onClick={() => setExpanded(!expanded)} className="flex items-center gap-2 text-left">
+          <span className="text-xs text-muted-foreground w-3">{expanded ? "▾" : "▸"}</span>
+          <span className="inline-block h-3 w-3 rounded-full" style={{ background: line.category_color }} />
+          <span className="font-medium">{line.category_name}</span>
+          {line.planned_from_items && <span className="rounded bg-muted px-1.5 text-[10px] font-medium text-muted-foreground">SUM OF {line.items.length}</span>}
+        </button>
+        <div className="ml-auto flex items-center gap-3">
+          <div className="text-right">
+            <div className="text-xs text-muted-foreground">Planned</div>
+            {line.planned_from_items ? (
+              <div className="w-28 text-right text-sm tabular-nums font-medium">{money(line.planned)}</div>
+            ) : (
+              <input
+                type="number" step="0.01"
+                defaultValue={line.planned}
+                key={line.planned}
+                onBlur={(e) => {
+                  const val = Number(e.target.value);
+                  if (val !== line.planned) onUpsertPlanned(val);
+                }}
+                className="w-28 rounded-md border border-input bg-background px-2 py-1 text-right text-sm tabular-nums"
+              />
+            )}
+          </div>
+          <div className="text-right">
+            <div className="text-xs text-muted-foreground">Actual</div>
+            <div className={`text-sm tabular-nums ${over ? "text-[color:var(--negative)]" : ""}`}>{money(line.actual)}</div>
+          </div>
+          <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
+            <div className={`h-full ${over ? "bg-[color:var(--negative)]" : "bg-primary"}`} style={{ width: `${Math.min(100, pct)}%` }} />
+          </div>
+          <Button size="sm" variant="danger" onClick={onRemove}>×</Button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="mt-3 rounded-md border border-border bg-muted/30 p-2 space-y-2">
+          {line.items.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No named items yet. Add sub-items to itemize this category — the total will sum automatically.</p>
+          ) : (
+            <ul className="divide-y divide-border rounded-md bg-background">
+              {line.items.map((it) => (
+                <li key={it.id} className="flex items-center gap-2 px-2 py-1">
+                  <input
+                    defaultValue={it.name}
+                    onBlur={(e) => {
+                      const name = e.target.value.trim();
+                      if (name && name !== it.name) mUpdate.mutate({ data: { id: it.id, name, amount: it.amount } });
+                    }}
+                    className="flex-1 rounded border border-transparent bg-transparent px-1.5 py-1 text-sm focus:border-input focus:bg-background focus:outline-none"
+                  />
+                  <input
+                    type="number" step="0.01"
+                    defaultValue={it.amount}
+                    onBlur={(e) => {
+                      const amount = Number(e.target.value);
+                      if (amount !== it.amount) mUpdate.mutate({ data: { id: it.id, name: it.name, amount } });
+                    }}
+                    className="w-24 rounded border border-transparent bg-transparent px-1.5 py-1 text-right text-sm tabular-nums focus:border-input focus:bg-background focus:outline-none"
+                  />
+                  <button
+                    onClick={() => confirm(`Remove ${it.name}?`) && mDelete.mutate({ data: { id: it.id } })}
+                    className="text-muted-foreground hover:text-destructive"
+                    aria-label="Remove item"
+                  >×</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form className="flex items-end gap-2" onSubmit={(e) => {
+            e.preventDefault();
+            const fd = new FormData(e.currentTarget);
+            const name = String(fd.get("name") || "").trim();
+            const amount = Number(fd.get("amount") || 0);
+            if (!name) return;
+            mCreate.mutate({ data: { budget_line_id: line.id, name, amount, sort_order: line.items.length } });
+            (e.currentTarget as HTMLFormElement).reset();
+          }}>
+            <TextInput name="name" placeholder="Item name (e.g. Rent)" className="flex-1" required />
+            <TextInput type="number" step="0.01" name="amount" placeholder="0.00" className="w-28" defaultValue="0" />
+            <Button size="sm" type="submit">+ Item</Button>
+          </form>
+        </div>
+      )}
+    </Card>
   );
 }

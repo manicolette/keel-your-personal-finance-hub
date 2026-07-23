@@ -25,6 +25,7 @@ const searchSchema = z.object({
   to: fallback(z.string(), "").default(""),
   account: fallback(z.string(), "").default(""),
   category: fallback(z.string(), "").default(""),
+  q: fallback(z.string(), "").default(""),
 });
 
 export const Route = createFileRoute("/_gated/transactions")({
@@ -46,15 +47,17 @@ function TransactionsPage() {
   const { data: allTxs } = useSuspenseQuery(txQuery);
   const { data: accts } = useSuspenseQuery(acctQuery);
   const { data: cats } = useSuspenseQuery(catQuery);
-  const { from, to, account, category } = Route.useSearch();
+  const { from, to, account, category, q } = Route.useSearch();
   const navigate = useNavigate({ from: "/_gated/transactions" });
-  const setFilter = (patch: Partial<{ from: string; to: string; account: string; category: string }>) =>
-    navigate({ search: (prev: { from: string; to: string; account: string; category: string }) => ({ ...prev, ...patch }) });
+  const setFilter = (patch: Partial<{ from: string; to: string; account: string; category: string; q: string }>) =>
+    navigate({ search: (prev) => ({ ...prev, ...patch }) });
+  const qLower = q.trim().toLowerCase();
   const txs = allTxs.filter((t) => {
     if (from && t.on_date < from) return false;
     if (to && t.on_date > to) return false;
     if (account && t.account_id !== account && t.transfer_account_id !== account) return false;
     if (category && t.category_id !== category) return false;
+    if (qLower && !(t.notes ?? "").toLowerCase().includes(qLower)) return false;
     return true;
   });
   const qc = useQueryClient();
@@ -63,6 +66,8 @@ function TransactionsPage() {
   const remove = useServerFn(deleteTransaction);
   const [editing, setEditing] = useState<Transaction | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["transactions"] });
     qc.invalidateQueries({ queryKey: ["dashboard"] });
@@ -71,12 +76,12 @@ function TransactionsPage() {
 
   const mCreate = useMutation({
     mutationFn: create,
-    onSuccess: () => { toast.success("Transaction added"); invalidate(); setShowForm(false); },
+    onSuccess: () => { toast.success("Transaction added"); invalidate(); setShowForm(false); setReceiptUrl(null); },
     onError: (e: Error) => toast.error(e.message),
   });
   const mUpdate = useMutation({
     mutationFn: update,
-    onSuccess: () => { toast.success("Saved"); invalidate(); setEditing(null); },
+    onSuccess: () => { toast.success("Saved"); invalidate(); setEditing(null); setReceiptUrl(null); },
     onError: (e: Error) => toast.error(e.message),
   });
   const mDelete = useMutation({
@@ -88,11 +93,34 @@ function TransactionsPage() {
   const acctName = (id: string | null) => (id ? accts.find((a) => a.id === id)?.name ?? "—" : "—");
   const catName = (id: string | null) => (id ? cats.find((c) => c.id === id)?.name ?? "—" : "—");
 
+  const openForEdit = (t: Transaction) => { setEditing(t); setShowForm(false); setReceiptUrl(t.receipt_url); };
+  const openForCreate = () => { setShowForm(true); setEditing(null); setReceiptUrl(null); };
+
   const initial: Partial<Transaction> = editing ?? {
     on_date: today(), account_id: accts[0]?.id, category_id: null, kind: "expense",
-    amount: 0, currency: accts[0]?.currency ?? "USD", notes: "", transfer_account_id: null,
+    amount: 0, currency: accts[0]?.currency ?? "USD", notes: "", transfer_account_id: null, receipt_url: null,
   };
   const formOpen = showForm || !!editing;
+
+  async function handleUpload(file: File) {
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/upload-receipt", { method: "POST", body: fd });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(err || "Upload failed");
+      }
+      const { url } = await res.json();
+      setReceiptUrl(url);
+      toast.success("Receipt uploaded");
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setUploading(false);
+    }
+  }
 
   function exportCsv() {
     const header = ["date", "kind", "account", "category", "amount", "currency", "transfer_to", "notes"];
@@ -113,13 +141,17 @@ function TransactionsPage() {
       <PageHeader title="Transactions"
         actions={<div className="flex gap-2">
           <Button variant="outline" onClick={exportCsv}>Export CSV</Button>
-          {!formOpen && <Button onClick={() => { setShowForm(true); setEditing(null); }}>Add</Button>}
+          {!formOpen && <Button onClick={openForCreate}>Add</Button>}
         </div>} />
 
       {accts.length === 0 && <EmptyState>Add an account first before creating transactions.</EmptyState>}
 
       <Card>
         <div className="flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">Search notes</span>
+            <TextInput type="search" value={q} onChange={(e) => setFilter({ q: e.target.value })} placeholder="Search…" className="w-52" />
+          </label>
           <label className="flex flex-col gap-1 text-xs">
             <span className="font-medium">From</span>
             <TextInput type="date" value={from} onChange={(e) => setFilter({ from: e.target.value })} className="w-40" />
@@ -142,8 +174,8 @@ function TransactionsPage() {
               {cats.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.kind})</option>)}
             </Select>
           </label>
-          {(from || to || account || category) && (
-            <Button size="sm" variant="ghost" onClick={() => navigate({ search: { from: "", to: "", account: "", category: "" } })}>Clear</Button>
+          {(from || to || account || category || q) && (
+            <Button size="sm" variant="ghost" onClick={() => navigate({ search: { from: "", to: "", account: "", category: "", q: "" } })}>Clear</Button>
           )}
           <div className="ml-auto text-xs text-muted-foreground tabular-nums">{txs.length} of {allTxs.length}</div>
         </div>
@@ -164,6 +196,7 @@ function TransactionsPage() {
               currency: String(fd.get("currency") || "USD"),
               notes: String(fd.get("notes") || "") || null,
               transfer_account_id: kind === "transfer" ? (String(fd.get("transfer_account_id") || "") || null) : null,
+              receipt_url: receiptUrl,
             };
             if (editing) mUpdate.mutate({ data: { ...payload, id: editing.id } });
             else mCreate.mutate({ data: payload });
@@ -198,15 +231,37 @@ function TransactionsPage() {
             <div className="sm:col-span-2 lg:col-span-3">
               <Field label="Notes"><Textarea name="notes" defaultValue={initial.notes ?? ""} /></Field>
             </div>
+            <div className="sm:col-span-2 lg:col-span-3">
+              <Field label="Receipt (optional)">
+                <div className="flex items-center gap-3">
+                  <input
+                    type="file" accept="image/*,application/pdf"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handleUpload(f);
+                    }}
+                    disabled={uploading}
+                    className="text-sm"
+                  />
+                  {uploading && <span className="text-xs text-muted-foreground">Uploading…</span>}
+                  {receiptUrl && (
+                    <>
+                      <a href={receiptUrl} target="_blank" rel="noreferrer" className="text-xs text-primary underline">View receipt</a>
+                      <button type="button" onClick={() => setReceiptUrl(null)} className="text-xs text-destructive">Remove</button>
+                    </>
+                  )}
+                </div>
+              </Field>
+            </div>
             <div className="col-span-full flex justify-end gap-2 pt-1">
-              <Button variant="ghost" type="button" onClick={() => { setShowForm(false); setEditing(null); }}>Cancel</Button>
+              <Button variant="ghost" type="button" onClick={() => { setShowForm(false); setEditing(null); setReceiptUrl(null); }}>Cancel</Button>
               <Button type="submit" disabled={mCreate.isPending || mUpdate.isPending}>{editing ? "Save" : "Create"}</Button>
             </div>
           </form>
         </Card>
       )}
 
-      {txs.length === 0 ? <EmptyState>No transactions yet.</EmptyState> : (
+      {txs.length === 0 ? <EmptyState>No transactions match.</EmptyState> : (
         <Table head={<>
           <Th>Date</Th><Th>Kind</Th><Th>Account</Th><Th>Category</Th>
           <Th className="text-right">Amount</Th><Th></Th>
@@ -216,13 +271,19 @@ function TransactionsPage() {
               <Td className="whitespace-nowrap">{t.on_date}</Td>
               <Td className="capitalize">{t.kind}</Td>
               <Td>{acctName(t.account_id)}{t.kind === "transfer" && ` → ${acctName(t.transfer_account_id)}`}</Td>
-              <Td>{catName(t.category_id)}</Td>
+              <Td>
+                <div className="flex items-center gap-2">
+                  {catName(t.category_id)}
+                  {t.receipt_url && <a href={t.receipt_url} target="_blank" rel="noreferrer" title="Receipt" className="text-xs text-primary">📎</a>}
+                </div>
+                {t.notes && <div className="text-xs text-muted-foreground line-clamp-1">{t.notes}</div>}
+              </Td>
               <Td className={`text-right tabular-nums ${t.kind === "expense" ? "text-[color:var(--negative)]" : t.kind === "income" ? "text-[color:var(--positive)]" : ""}`}>
                 {money(t.amount, t.currency)}
               </Td>
               <Td className="text-right">
                 <div className="flex justify-end gap-1">
-                  <Button size="sm" variant="outline" onClick={() => { setEditing(t); setShowForm(false); }}>Edit</Button>
+                  <Button size="sm" variant="outline" onClick={() => openForEdit(t)}>Edit</Button>
                   <Button size="sm" variant="danger" onClick={() => confirm("Delete this transaction?") && mDelete.mutate({ data: { id: t.id } })}>×</Button>
                 </div>
               </Td>
