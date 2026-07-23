@@ -57,7 +57,37 @@ export type ConstantItem = {
   active: boolean;
   notes: string | null;
 };
-export type RecurringIncome = ConstantItem;
+export type RecurringIncome = {
+  id: string;
+  name: string;
+  amount: number | null;
+  currency: string;
+  frequency: "weekly" | "biweekly" | "semimonthly" | "monthly" | "quarterly" | "yearly";
+  next_date: string;
+  account_id: string | null;
+  category_id: string | null;
+  active: boolean;
+  notes: string | null;
+  anchor_date: string | null;
+  semimonthly_day_1: number | null;
+  semimonthly_day_2: number | null;
+  is_variable: boolean;
+};
+export type IncomeInstance = {
+  id: string;
+  recurring_income_id: string | null;
+  expected_date: string;
+  name: string;
+  expected_amount: number | null;
+  currency: string;
+  status: "expected" | "received" | "skipped";
+  transaction_id: string | null;
+  received_amount: number | null;
+  transaction_date: string | null;
+  notes: string | null;
+  frequency: RecurringIncome["frequency"] | null;
+  is_variable: boolean;
+};
 export type Debt = {
   id: string;
   name: string;
@@ -366,6 +396,8 @@ export const deleteTransaction = createServerFn({ method: "POST" })
     const sql = await db();
     // Unlink any monthly-expense instances first so their status flips back to pending.
     await sql`UPDATE monthly_expense_instances SET transaction_id = NULL, status = 'pending' WHERE transaction_id = ${data.id}`;
+    // Same for income instances: revert to expected + clear received amount.
+    await sql`UPDATE income_instances SET transaction_id = NULL, status = 'expected', received_amount = NULL WHERE transaction_id = ${data.id}`;
     await sql`DELETE FROM transactions WHERE id = ${data.id}`;
     return { ok: true };
   });
@@ -493,39 +525,112 @@ export const deleteConstant = createServerFn({ method: "POST" })
   });
 
 // -------------------------- Recurring income --------------------------
+const incomeFrequency = z.enum(["weekly", "biweekly", "semimonthly", "monthly", "quarterly", "yearly"]);
+const incomeShape = {
+  name: z.string().min(1, "Name is required").max(80),
+  amount: z.coerce.number().nullable().optional(),
+  currency: z.string().min(1).max(8).default("USD"),
+  frequency: incomeFrequency,
+  next_date: z.string().min(10),
+  account_id: z.string().uuid().nullable().optional(),
+  category_id: z.string().uuid().nullable().optional(),
+  active: z.boolean().default(true),
+  notes: z.string().max(500).nullable().optional(),
+  anchor_date: z.string().min(10).nullable().optional(),
+  semimonthly_day_1: z.coerce.number().int().min(1).max(31).nullable().optional(),
+  semimonthly_day_2: z.coerce.number().int().min(1).max(31).nullable().optional(),
+  is_variable: z.boolean().default(false),
+};
+const incomeRefine = <T extends z.ZodTypeAny>(schema: T) =>
+  schema.superRefine((v: any, ctx) => {
+    if (!v.is_variable && (v.amount == null || Number.isNaN(v.amount))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["amount"], message: "Amount required unless variable" });
+    }
+    if (v.frequency === "semimonthly") {
+      if (v.semimonthly_day_1 == null || v.semimonthly_day_2 == null) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["semimonthly_day_1"], message: "Semi-monthly needs two days (1–31)" });
+      } else if (v.semimonthly_day_1 === v.semimonthly_day_2) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["semimonthly_day_2"], message: "Days must differ" });
+      }
+    }
+  });
+const incomeInput = incomeRefine(z.object(incomeShape));
+const incomeUpdateInput = incomeRefine(z.object({ ...incomeShape, id: z.string().uuid() }));
+
+function mapIncome(r: any): RecurringIncome {
+  return {
+    id: r.id,
+    name: r.name,
+    amount: r.amount == null ? null : n(r.amount),
+    currency: r.currency,
+    frequency: r.frequency,
+    next_date: d(r.next_date),
+    account_id: r.account_id,
+    category_id: r.category_id,
+    active: !!r.active,
+    notes: s(r.notes),
+    anchor_date: dOrNull(r.anchor_date),
+    semimonthly_day_1: r.semimonthly_day_1 == null ? null : Number(r.semimonthly_day_1),
+    semimonthly_day_2: r.semimonthly_day_2 == null ? null : Number(r.semimonthly_day_2),
+    is_variable: !!r.is_variable,
+  };
+}
+
 export const listRecurringIncome = createServerFn({ method: "GET" }).handler(async () => {
   await requireUnlocked();
   const sql = await db();
   const rows = (await sql`
-    SELECT id, name, amount, currency, frequency, next_date, account_id, category_id, active, notes
-    FROM recurring_income ORDER BY next_date`) as any[];
-  return rows.map((r) => ({ ...r, amount: n(r.amount), next_date: d(r.next_date), notes: s(r.notes) })) as RecurringIncome[];
+    SELECT id, name, amount, currency, frequency, next_date, account_id, category_id, active, notes,
+           anchor_date, semimonthly_day_1, semimonthly_day_2, is_variable
+    FROM recurring_income ORDER BY name`) as any[];
+  return rows.map(mapIncome);
 });
 
 export const createRecurringIncome = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => constInput.parse(data))
+  .inputValidator((data: unknown) => incomeInput.parse(data))
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
-    const rows = (await sql`
-      INSERT INTO recurring_income (name, amount, currency, frequency, next_date, account_id, category_id, active, notes)
-      VALUES (${data.name}, ${data.amount}, ${data.currency}, ${data.frequency}, ${data.next_date}, ${data.account_id ?? null}, ${data.category_id ?? null}, ${data.active}, ${data.notes ?? null})
-      RETURNING id`) as any[];
-    return { id: rows[0].id as string };
+    // Biweekly: if no anchor given, use next_date as the anchor for the 14-day cycle.
+    const anchor = data.frequency === "biweekly" ? (data.anchor_date ?? data.next_date) : (data.anchor_date ?? null);
+    const amt = data.is_variable ? null : data.amount ?? 0;
+    try {
+      const rows = (await sql`
+        INSERT INTO recurring_income
+          (name, amount, currency, frequency, next_date, account_id, category_id, active, notes,
+           anchor_date, semimonthly_day_1, semimonthly_day_2, is_variable)
+        VALUES (${data.name}, ${amt}, ${data.currency}, ${data.frequency}, ${data.next_date},
+                ${data.account_id ?? null}, ${data.category_id ?? null}, ${data.active}, ${data.notes ?? null},
+                ${anchor}, ${data.semimonthly_day_1 ?? null}, ${data.semimonthly_day_2 ?? null}, ${data.is_variable})
+        RETURNING id`) as any[];
+      return { id: rows[0].id as string };
+    } catch (err) {
+      throw new Error(`Failed to save income source: ${(err as Error).message}`);
+    }
   });
 
 export const updateRecurringIncome = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => constInput.extend({ id: z.string().uuid() }).parse(data))
+  .inputValidator((data: unknown) => incomeUpdateInput.parse(data))
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
-    await sql`
-      UPDATE recurring_income SET name = ${data.name}, amount = ${data.amount}, currency = ${data.currency},
-        frequency = ${data.frequency}, next_date = ${data.next_date},
-        account_id = ${data.account_id ?? null}, category_id = ${data.category_id ?? null},
-        active = ${data.active}, notes = ${data.notes ?? null}
-      WHERE id = ${data.id}`;
-    return { ok: true };
+    const anchor = data.frequency === "biweekly" ? (data.anchor_date ?? data.next_date) : (data.anchor_date ?? null);
+    const amt = data.is_variable ? null : data.amount ?? 0;
+    try {
+      await sql`
+        UPDATE recurring_income SET name = ${data.name}, amount = ${amt}, currency = ${data.currency},
+          frequency = ${data.frequency}, next_date = ${data.next_date},
+          account_id = ${data.account_id ?? null}, category_id = ${data.category_id ?? null},
+          active = ${data.active}, notes = ${data.notes ?? null},
+          anchor_date = ${anchor},
+          semimonthly_day_1 = ${data.semimonthly_day_1 ?? null},
+          semimonthly_day_2 = ${data.semimonthly_day_2 ?? null},
+          is_variable = ${data.is_variable}
+        WHERE id = ${data.id}`;
+      return { ok: true };
+    } catch (err) {
+      throw new Error(`Failed to update income source: ${(err as Error).message}`);
+    }
   });
 
 export const deleteRecurringIncome = createServerFn({ method: "POST" })
@@ -537,7 +642,7 @@ export const deleteRecurringIncome = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-// Log a received income: create transaction, advance next_date by frequency.
+// Kept for backward compatibility with any old callers. The UI no longer uses it.
 export const logRecurringIncomeReceived = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) =>
     z.object({
@@ -554,24 +659,239 @@ export const logRecurringIncomeReceived = createServerFn({ method: "POST" })
     const inc = rows[0];
     const accountId = data.account_id ?? inc.account_id;
     if (!accountId) throw new Error("Pick an account to deposit into");
+    const amt = inc.amount == null ? 0 : n(inc.amount);
     await sql`
       INSERT INTO transactions (on_date, account_id, category_id, kind, amount, currency, notes)
-      VALUES (${data.on_date}, ${accountId}, ${inc.category_id ?? null}, 'income', ${inc.amount}, ${inc.currency}, ${`Income: ${inc.name}`})`;
-    // Advance next_date by frequency.
-    const nextIso = advanceByFrequency(d(inc.next_date), inc.frequency);
-    await sql`UPDATE recurring_income SET next_date = ${nextIso} WHERE id = ${data.id}`;
+      VALUES (${data.on_date}, ${accountId}, ${inc.category_id ?? null}, 'income', ${amt}, ${inc.currency}, ${`Income: ${inc.name}`})`;
     return { ok: true };
   });
 
-function advanceByFrequency(iso: string, freq: string): string {
+// -------------------------- Income date math --------------------------
+// All helpers work on ISO YYYY-MM-DD strings in UTC to avoid tz drift.
+function isoToUTC(iso: string): Date {
   const [y, m, day] = iso.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, day));
-  if (freq === "weekly") dt.setUTCDate(dt.getUTCDate() + 7);
-  else if (freq === "monthly") dt.setUTCMonth(dt.getUTCMonth() + 1);
-  else if (freq === "quarterly") dt.setUTCMonth(dt.getUTCMonth() + 3);
-  else if (freq === "yearly") dt.setUTCFullYear(dt.getUTCFullYear() + 1);
+  return new Date(Date.UTC(y, m - 1, day));
+}
+function utcToIso(dt: Date): string {
   return dt.toISOString().slice(0, 10);
 }
+function daysInMonth(year: number, month1: number): number {
+  return new Date(Date.UTC(year, month1, 0)).getUTCDate();
+}
+function addDays(iso: string, n: number): string {
+  const dt = isoToUTC(iso);
+  dt.setUTCDate(dt.getUTCDate() + n);
+  return utcToIso(dt);
+}
+
+// Enumerate all expected pay dates that fall inside [monthStart, monthEnd] (inclusive)
+// for the given income source. Returns ISO date strings.
+export function enumerateIncomeDatesInMonth(inc: {
+  frequency: RecurringIncome["frequency"];
+  next_date: string;
+  anchor_date: string | null;
+  semimonthly_day_1: number | null;
+  semimonthly_day_2: number | null;
+}, monthIso: string): string[] {
+  const monthStart = monthIso; // YYYY-MM-01
+  const [y, m] = monthStart.split("-").map(Number);
+  const monthEndDay = daysInMonth(y, m);
+  const monthEnd = `${monthStart.slice(0, 7)}-${String(monthEndDay).padStart(2, "0")}`;
+  const out: string[] = [];
+
+  if (inc.frequency === "semimonthly") {
+    const d1 = Math.min(inc.semimonthly_day_1 ?? 1, monthEndDay);
+    const d2 = Math.min(inc.semimonthly_day_2 ?? monthEndDay, monthEndDay);
+    const iso1 = `${monthStart.slice(0, 7)}-${String(d1).padStart(2, "0")}`;
+    const iso2 = `${monthStart.slice(0, 7)}-${String(d2).padStart(2, "0")}`;
+    // Deduplicate + sort in case both days clamp to the same last day.
+    return Array.from(new Set([iso1, iso2])).sort();
+  }
+
+  if (inc.frequency === "biweekly") {
+    const anchor = inc.anchor_date ?? inc.next_date;
+    // Walk forward or backward from anchor in 14-day steps until we enter the month.
+    let cursor = anchor;
+    if (cursor < monthStart) {
+      const anchorDt = isoToUTC(anchor);
+      const monthStartDt = isoToUTC(monthStart);
+      const diffDays = Math.floor((monthStartDt.getTime() - anchorDt.getTime()) / 86400000);
+      const skip = Math.floor(diffDays / 14) * 14;
+      cursor = addDays(anchor, skip);
+      while (cursor < monthStart) cursor = addDays(cursor, 14);
+    } else {
+      while (addDays(cursor, -14) >= monthStart) cursor = addDays(cursor, -14);
+    }
+    while (cursor <= monthEnd) {
+      out.push(cursor);
+      cursor = addDays(cursor, 14);
+    }
+    return out;
+  }
+
+  // weekly / monthly / quarterly / yearly: walk from next_date.
+  let cursor = inc.next_date;
+  const stepUnit: "days" | "months" | "years" =
+    inc.frequency === "weekly" ? "days" : inc.frequency === "yearly" ? "years" : "months";
+  const stepQty = inc.frequency === "weekly" ? 7 : inc.frequency === "quarterly" ? 3 : inc.frequency === "yearly" ? 1 : 1;
+
+  const advance = (iso: string): string => {
+    if (stepUnit === "days") return addDays(iso, stepQty);
+    const dt = isoToUTC(iso);
+    if (stepUnit === "months") dt.setUTCMonth(dt.getUTCMonth() + stepQty);
+    else dt.setUTCFullYear(dt.getUTCFullYear() + stepQty);
+    return utcToIso(dt);
+  };
+  const rewind = (iso: string): string => {
+    if (stepUnit === "days") return addDays(iso, -stepQty);
+    const dt = isoToUTC(iso);
+    if (stepUnit === "months") dt.setUTCMonth(dt.getUTCMonth() - stepQty);
+    else dt.setUTCFullYear(dt.getUTCFullYear() - stepQty);
+    return utcToIso(dt);
+  };
+
+  while (cursor > monthEnd) cursor = rewind(cursor);
+  while (cursor < monthStart) cursor = advance(cursor);
+  while (cursor <= monthEnd) {
+    out.push(cursor);
+    cursor = advance(cursor);
+  }
+  return out;
+}
+
+// -------------------------- Income instances --------------------------
+async function materializeIncomeMonth(sqlAny: any, monthIso: string): Promise<void> {
+  const sources = (await sqlAny`
+    SELECT id, name, currency, frequency, next_date, amount, anchor_date, semimonthly_day_1, semimonthly_day_2, is_variable
+    FROM recurring_income WHERE active = true`) as any[];
+  for (const src of sources) {
+    const dates = enumerateIncomeDatesInMonth(
+      {
+        frequency: src.frequency,
+        next_date: d(src.next_date),
+        anchor_date: dOrNull(src.anchor_date),
+        semimonthly_day_1: src.semimonthly_day_1 == null ? null : Number(src.semimonthly_day_1),
+        semimonthly_day_2: src.semimonthly_day_2 == null ? null : Number(src.semimonthly_day_2),
+      },
+      monthIso,
+    );
+    for (const dateIso of dates) {
+      const expectedAmt = src.is_variable ? null : (src.amount == null ? null : n(src.amount));
+      // Rely on the partial unique index (recurring_income_id, expected_date).
+      await sqlAny`
+        INSERT INTO income_instances
+          (recurring_income_id, expected_date, name_snapshot, expected_amount, currency, status)
+        VALUES (${src.id}, ${dateIso}, ${src.name}, ${expectedAmt}, ${src.currency}, 'expected')
+        ON CONFLICT (recurring_income_id, expected_date) DO NOTHING`;
+    }
+  }
+}
+
+export const getIncome = createServerFn({ method: "GET" })
+  .inputValidator((data: unknown) => z.object({ month: z.string().regex(/^\d{4}-\d{2}$/) }).parse(data))
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    const monthIso = `${data.month}-01`;
+    await materializeIncomeMonth(sql, monthIso);
+    const monthEndDay = daysInMonth(Number(data.month.slice(0, 4)), Number(data.month.slice(5, 7)));
+    const monthEndIso = `${data.month}-${String(monthEndDay).padStart(2, "0")}`;
+    const rows = (await sql`
+      SELECT ii.id, ii.recurring_income_id, ii.expected_date, ii.name_snapshot, ii.expected_amount,
+             ii.currency, ii.status, ii.transaction_id, ii.received_amount, ii.notes,
+             ri.frequency, ri.is_variable,
+             t.on_date AS tx_date, t.amount AS tx_amount
+      FROM income_instances ii
+      LEFT JOIN recurring_income ri ON ri.id = ii.recurring_income_id
+      LEFT JOIN transactions t ON t.id = ii.transaction_id
+      WHERE ii.expected_date >= ${monthIso}::date AND ii.expected_date <= ${monthEndIso}::date
+      ORDER BY ii.expected_date, ii.name_snapshot`) as any[];
+    const instances: IncomeInstance[] = rows.map((r) => ({
+      id: r.id,
+      recurring_income_id: r.recurring_income_id,
+      expected_date: d(r.expected_date),
+      name: r.name_snapshot,
+      expected_amount: r.expected_amount == null ? null : n(r.expected_amount),
+      currency: r.currency,
+      status: r.status,
+      transaction_id: r.transaction_id,
+      received_amount: r.received_amount == null ? (r.tx_amount == null ? null : n(r.tx_amount)) : n(r.received_amount),
+      transaction_date: r.tx_date == null ? null : d(r.tx_date),
+      notes: s(r.notes),
+      frequency: r.frequency ?? null,
+      is_variable: !!r.is_variable,
+    }));
+    const expectedTotal = instances
+      .filter((i) => i.status !== "skipped" && i.expected_amount != null)
+      .reduce((a, b) => a + (b.expected_amount ?? 0), 0);
+    const receivedTotal = instances
+      .filter((i) => i.status === "received")
+      .reduce((a, b) => a + (b.received_amount ?? 0), 0);
+    return { month: data.month, instances, expectedTotal, receivedTotal };
+  });
+
+export const updateIncomeInstance = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      id: z.string().uuid(),
+      expected_amount: z.coerce.number().nullable().optional(),
+      status: z.enum(["expected", "received", "skipped"]).optional(),
+      notes: z.string().max(500).nullable().optional(),
+    }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    const cur = (await sql`SELECT expected_amount, status, notes FROM income_instances WHERE id = ${data.id}`) as any[];
+    if (cur.length === 0) throw new Error("Income instance not found");
+    const expected = data.expected_amount === undefined ? cur[0].expected_amount : data.expected_amount;
+    const status = data.status ?? cur[0].status;
+    const notes = data.notes === undefined ? cur[0].notes : data.notes;
+    await sql`
+      UPDATE income_instances
+      SET expected_amount = ${expected}, status = ${status},
+          transaction_id = CASE WHEN ${status} = 'received' THEN transaction_id ELSE NULL END,
+          received_amount = CASE WHEN ${status} = 'received' THEN received_amount ELSE NULL END,
+          notes = ${notes}
+      WHERE id = ${data.id}`;
+    return { ok: true };
+  });
+
+export const linkTransactionToIncome = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      instance_id: z.string().uuid(),
+      transaction_id: z.string().uuid(),
+      received_amount: z.coerce.number().nullable().optional(),
+    }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    // A transaction can only be linked to one income instance at a time.
+    await sql`UPDATE income_instances SET transaction_id = NULL, status = 'expected', received_amount = NULL WHERE transaction_id = ${data.transaction_id} AND id <> ${data.instance_id}`;
+    let amt: number | null = data.received_amount ?? null;
+    if (amt == null) {
+      const t = (await sql`SELECT amount FROM transactions WHERE id = ${data.transaction_id}`) as any[];
+      if (t.length === 0) throw new Error("Transaction not found");
+      amt = n(t[0].amount);
+    }
+    await sql`
+      UPDATE income_instances
+      SET transaction_id = ${data.transaction_id}, status = 'received', received_amount = ${amt}
+      WHERE id = ${data.instance_id}`;
+    return { ok: true };
+  });
+
+export const unlinkIncomeInstance = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => z.object({ id: z.string().uuid() }).parse(data))
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    await sql`UPDATE income_instances SET transaction_id = NULL, status = 'expected', received_amount = NULL WHERE id = ${data.id}`;
+    return { ok: true };
+  });
+
 
 // -------------------------- Debts --------------------------
 const debtInput = z.object({
@@ -1241,11 +1561,24 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async () =
   await requireUnlocked();
   const sql = await db();
 
+  // Materialize income for current + next month so upcoming widget shows real projected dates
+  // (biweekly + semimonthly need per-occurrence rows, not per-source).
+  const now = new Date();
+  const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  const nextDt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  const nextMonth = `${nextDt.getUTCFullYear()}-${String(nextDt.getUTCMonth() + 1).padStart(2, "0")}`;
+  await materializeIncomeMonth(sql, `${thisMonth}-01`);
+  await materializeIncomeMonth(sql, `${nextMonth}-01`);
+
   const [settingsRows, upcomingSubs, upcomingReminders, upcomingIncome, totals, live] = await Promise.all([
     sql`SELECT base_currency FROM app_settings LIMIT 1` as Promise<any[]>,
     sql`SELECT id, name, amount, currency, next_charge_date FROM subscriptions WHERE active = true ORDER BY next_charge_date LIMIT 5` as Promise<any[]>,
     sql`SELECT id, title, due_date, amount FROM reminders WHERE done = false ORDER BY due_date LIMIT 5` as Promise<any[]>,
-    sql`SELECT id, name, amount, currency, next_date FROM recurring_income WHERE active = true ORDER BY next_date LIMIT 5` as Promise<any[]>,
+    sql`
+      SELECT id, name_snapshot AS name, expected_amount AS amount, currency, expected_date, status
+      FROM income_instances
+      WHERE status = 'expected' AND expected_date >= CURRENT_DATE
+      ORDER BY expected_date LIMIT 8` as Promise<any[]>,
     sql`
       SELECT
         COALESCE(SUM(CASE WHEN kind = 'income' AND date_trunc('month', on_date) = date_trunc('month', CURRENT_DATE) THEN amount ELSE 0 END),0) AS income_mtd,
@@ -1269,9 +1602,9 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async () =
     upcomingIncome: upcomingIncome.map((r) => ({
       id: r.id as string,
       name: r.name as string,
-      amount: n(r.amount),
+      amount: r.amount == null ? null : n(r.amount),
       currency: r.currency as string,
-      next_date: d(r.next_date),
+      next_date: d(r.expected_date),
     })),
     upcomingReminders: upcomingReminders.map((r) => ({
       id: r.id as string,

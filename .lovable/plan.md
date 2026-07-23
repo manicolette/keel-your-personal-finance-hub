@@ -1,114 +1,104 @@
-# Monthly Expenses redesign
+# Income redesign
 
-Replaces the current `budget_line_items` (per-category, per-month, manual) with a Subscriptions-style **definitions** table plus a **per-month instance** table that snapshots what was planned/paid for each expense in each month. This is the core change: definitions describe the recurring intent; instances are the historical record.
+Mirrors the Monthly Expenses shape: **definitions** (`recurring_income`, extended) + **per-occurrence instances** (`income_instances`). Multiple named sources, each with its own schedule and variability. Additive-only migrations.
 
-## Schema (additive migrations only)
+## Schema changes
+
+Extend the existing `recurring_income` table (kept — additive):
 
 ```sql
--- Definitions: one row per recurring monthly expense.
-CREATE TABLE IF NOT EXISTS monthly_expenses (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name text NOT NULL,
-  category_id uuid REFERENCES categories(id) ON DELETE SET NULL,
-  default_amount numeric(14,2) NOT NULL DEFAULT 0,
-  currency text NOT NULL DEFAULT 'USD',
-  active boolean NOT NULL DEFAULT true,     -- false = deactivated, hidden from future months
-  start_month date,                         -- first month it applies (YYYY-MM-01); null = always
-  end_month date,                           -- last month it applies; null = ongoing
-  notes text,
-  sort_order int NOT NULL DEFAULT 0,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
+ALTER TABLE recurring_income
+  DROP CONSTRAINT IF EXISTS recurring_income_frequency_check;
+ALTER TABLE recurring_income
+  ADD CONSTRAINT recurring_income_frequency_check
+  CHECK (frequency IN ('weekly','biweekly','semimonthly','monthly','quarterly','yearly'));
 
--- Per-month instances: one row per (expense, month) once materialized.
--- Also stores ad-hoc one-off items (monthly_expense_id = null, month + name + category set directly).
-CREATE TABLE IF NOT EXISTS monthly_expense_instances (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  monthly_expense_id uuid REFERENCES monthly_expenses(id) ON DELETE SET NULL,
-  month date NOT NULL,                      -- always YYYY-MM-01
-  name_snapshot text NOT NULL,              -- frozen at materialization; edits to def don't change past
-  category_id uuid REFERENCES categories(id) ON DELETE SET NULL,
-  planned_amount numeric(14,2) NOT NULL,    -- frozen snapshot; also holds one-month overrides
-  currency text NOT NULL DEFAULT 'USD',
-  status text NOT NULL DEFAULT 'pending'
-    CHECK (status IN ('pending','paid','paused','skipped')),
-  transaction_id uuid REFERENCES transactions(id) ON DELETE SET NULL,
-  is_ad_hoc boolean NOT NULL DEFAULT false,
-  notes text,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (monthly_expense_id, month)        -- one instance per definition per month
-);
-CREATE INDEX IF NOT EXISTS mei_month_idx ON monthly_expense_instances(month);
-CREATE INDEX IF NOT EXISTS mei_category_month_idx ON monthly_expense_instances(category_id, month);
-CREATE INDEX IF NOT EXISTS mei_txn_idx ON monthly_expense_instances(transaction_id);
+ALTER TABLE recurring_income
+  ADD COLUMN IF NOT EXISTS anchor_date date,          -- biweekly: pay-cycle anchor (14-day math from here)
+  ADD COLUMN IF NOT EXISTS semimonthly_day_1 int,     -- e.g. 1  or 15
+  ADD COLUMN IF NOT EXISTS semimonthly_day_2 int,     -- e.g. 15 or 31 (31 = "last day of month")
+  ADD COLUMN IF NOT EXISTS is_variable boolean NOT NULL DEFAULT false;
+
+ALTER TABLE recurring_income ALTER COLUMN amount DROP NOT NULL;  -- variable sources can leave amount null
 ```
 
-`budget_line_items` is left in place (unused by the new UI) rather than dropped — additive-only rule.
+New table for per-occurrence status (Expected → Received):
 
-## How the pieces interact
+```sql
+CREATE TABLE IF NOT EXISTS income_instances (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  recurring_income_id uuid REFERENCES recurring_income(id) ON DELETE SET NULL,
+  expected_date date NOT NULL,                        -- when we projected it
+  name_snapshot text NOT NULL,
+  expected_amount numeric(14,2),                      -- null for variable sources
+  currency text NOT NULL DEFAULT 'USD',
+  status text NOT NULL DEFAULT 'expected'
+    CHECK (status IN ('expected','received','skipped')),
+  transaction_id uuid REFERENCES transactions(id) ON DELETE SET NULL,
+  received_amount numeric(14,2),                      -- populated on link (esp. for variable sources)
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (recurring_income_id, expected_date)
+);
+CREATE INDEX IF NOT EXISTS income_instances_date_idx ON income_instances(expected_date);
+CREATE INDEX IF NOT EXISTS income_instances_txn_idx  ON income_instances(transaction_id);
+```
 
-- **Definitions** (`monthly_expenses`) = the "Rent, Internet, Car Insurance" list. Edited on a new `/monthly-expenses` route, styled like `/subscriptions`.
-- **Instances** (`monthly_expense_instances`) = the frozen per-month snapshot. Created lazily the first time a month is viewed (or when the user acts on it). Once created, edits to the definition never mutate it.
-- **Historical safety**: past months read only their instance rows. Editing a definition today changes `default_amount`, but September's instance still holds `planned_amount=600` even after October's edit sets it to 650.
-- **Ad-hoc items**: `is_ad_hoc = true`, `monthly_expense_id = null`. Live in the same table so the Budget page renders one unified list per category.
+## Date math (server-side, dedicated helpers)
 
-### Materialization rule (server-side, in `getBudget(month)`)
+- **weekly** → +7 days from `next_date`.
+- **biweekly** → +14 days from `anchor_date` (fall back to `next_date` if anchor missing). Never day-of-month based. Test: anchor 2026-07-24 → 2026-08-07, 2026-08-21, 2026-09-04, 2026-09-18 (Aug gets 2 checks, Oct gets 3).
+- **semimonthly** → for month M, emit `(M, day_1)` and `(M, day_2)`; if either day > `daysInMonth(M)` (e.g. day_2 = 31), clamp to last day of that month. Always exactly 2 per calendar month, no drift.
+- **monthly / quarterly / yearly** → unchanged (add 1 / 3 / 12 months to `next_date`).
 
-For the requested `month`:
-1. Load existing instances for that month.
-2. Load active definitions where `start_month <= month` (or null) and (`end_month >= month` or null) and no instance yet for that (def, month).
-3. For each missing one, insert an instance with `planned_amount = default_amount`, `name_snapshot = name`, `category_id`, `status = 'pending'`.
-4. Return instances grouped by category. Category `planned` total = `SUM(planned_amount)` over its instances (excluding `status='paused'|'skipped'`). Category `actual` stays as it is today (sum of transactions).
+## Materialization (in a new `getIncome({month})`, mirrors `getBudget`)
 
-Only materializes the currently viewed month, so viewing "August 2027" doesn't fill in every month between now and then.
+For the requested month:
+1. Load existing `income_instances` in that month.
+2. For each active `recurring_income`, project all occurrences that fall inside the month using the helpers above; upsert an `expected` instance for each missing `(source, date)`.
+3. Return instances (with source name/frequency) sorted by date, plus month totals: `expectedTotal = sum(expected_amount)` over non-skipped, `receivedTotal = sum(received_amount)` over `received`.
 
-### Editing semantics (matches user's requirements point-by-point)
+Variable sources contribute `0` to `expectedTotal` and only show up in `receivedTotal` once linked.
 
-- **Rename / recategorize / change amount** on a definition → updates definition only. Future months materialize with the new values; already-materialized instances stay frozen.
-- **One-month override** → edit the instance's `planned_amount` directly (on the Budget page). Definition untouched.
-- **Pause for one month** → set instance `status='paused'`. Still visible on that month's Budget with a "Paused" badge; excluded from planned total. Definition still materializes normal instances in other months.
-- **Deactivate** definition → `active=false`. Stops materializing new months. Existing instances remain.
-- **Delete** definition → `ON DELETE SET NULL` on instances keeps history intact; instance rows survive with `monthly_expense_id=null` and their frozen snapshot.
-- **Link / unlink transaction** → set/clear `transaction_id` and flip `status` between `paid`/`pending`. Manual only — no auto-matching.
+Dashboard "upcoming income" switches to reading from `income_instances WHERE status='expected' AND expected_date >= today` — so multiple biweekly sources land on their own real dates.
 
-## Server functions (in `keel.functions.ts`)
+## Server functions (`keel.functions.ts`)
 
-Definitions CRUD:
-- `listMonthlyExpenses()`, `createMonthlyExpense`, `updateMonthlyExpense`, `deleteMonthlyExpense`
+Definitions (extend existing):
+- `listRecurringIncome`, `createRecurringIncome`, `updateRecurringIncome`, `deleteRecurringIncome` — accept the new fields; validate: biweekly requires `anchor_date`; semimonthly requires both `semimonthly_day_1` and `semimonthly_day_2` in 1..31; variable sources allow null `amount`.
 
-Per-month instance ops:
-- `getBudget({month})` — extended: materializes + returns instances grouped by category alongside existing budget lines.
-- `updateExpenseInstance({id, planned_amount?, status?, notes?})` — for overrides and pause.
-- `createAdHocExpense({month, name, category_id, planned_amount})` — one-off item for a specific month.
-- `deleteExpenseInstance({id})` — removes a materialized instance (ad-hoc, or "not this month" for a definition; next view re-materializes unless status was paused).
-- `linkTransactionToExpense({instance_id, transaction_id})` / `unlinkTransactionFromExpense({instance_id})`.
+Instances (new):
+- `getIncome({month})` — materialize + return grouped.
+- `updateIncomeInstance({id, expected_amount?, status?, notes?})` — overrides + skip.
+- `linkTransactionToIncome({instance_id, transaction_id, received_amount?})` — sets status `received`, stores actual amount (defaults to transaction.amount).
+- `unlinkIncomeInstance({instance_id})` — reverts to `expected`, clears amount.
+- Deprecate `logRecurringIncomeReceived` (leave function so old code doesn't break, but UI stops calling it).
 
-Transactions form gets a new optional field: "Pays which Monthly Expense?" — a dropdown of the current-month unpaid instances. On save, links + flips to `paid`.
+Transaction form gets a second optional field: "Receives which Income?" — dropdown of current-month `expected` instances. Mutually exclusive with the existing Monthly Expense link.
 
 ## UI
 
-- **New `/monthly-expenses` route** — Subscriptions-shaped list: name, category, default amount, active toggle, edit/delete. Primary way to add recurring expenses. Linked from side + bottom nav.
-- **`/budget`** — reshaped around the question "what am I expected to pay this month, and what's paid?" For each category card:
-  - Header: name + planned (sum of active instances) + actual (from transactions).
-  - Rows: each instance with name, planned amount, status pill (Pending / Paid / Paused), linked transaction amount + date if any, and inline actions (override amount, pause, link txn, unlink, delete if ad-hoc).
-  - Footer: small secondary "+ Add one-off item" button (ad-hoc). Deliberately subdued vs. the Monthly Expenses list.
-- **Transactions create/edit form** — new optional "Pays Monthly Expense" select (current-month pending instances).
+- **`/income`** — two-panel:
+  - **Sources** (top): list of definitions, styled like `/monthly-expenses`. Add/edit form with frequency-conditional fields (biweekly → anchor date picker; semimonthly → two day inputs with "31 = last day of month" hint; variable checkbox → hides amount input).
+  - **This month** (below): month selector (URL search param, same pattern as Budget), showing projected income_instances with source name, expected date, expected amount (or "variable"), status pill (Expected / Received / Skipped), inline actions (link txn, unlink, override, skip). Footer totals: Expected / Received.
+- **`/dashboard`** — "Upcoming income" pulls from `income_instances` so bi-weekly sources show their real dates and multiple sources are listed separately.
+- **`/transactions`** form — add income-link dropdown alongside the existing expense-link.
 
 ## Build order
 
-1. Migration additions.
-2. Server fns: definitions CRUD, materialization inside `getBudget`, instance mutations, link/unlink.
-3. `/monthly-expenses` route.
-4. Rework `/budget` around instances; remove the current per-month `BudgetLineCard` line-item UI (`budget_line_items` table stays orphaned, table not dropped).
-5. Transactions form: add expense-link dropdown.
-6. Nav links.
-7. Playwright end-to-end: (a) add "Rent $600" definition → appears in Jul, Aug, Sep automatically; (b) override Aug to $650, confirm Jul/Sep unchanged; (c) edit definition to $700, confirm Jul/Aug/Sep instances unchanged, Oct materializes at $700; (d) pause Sep, confirm excluded from Sep total but still listed; (e) link a transaction from `/transactions` form, confirm status flips to Paid with actual amount shown; (f) unlink, confirm reverts to Pending.
+1. Migrations (frequency check + new columns + `income_instances`).
+2. Date-math helpers with unit-level sanity print in a scratch script (biweekly cycle, semimonthly with day_2=31 in Feb/Apr).
+3. Server fns: extended CRUD + `getIncome` + instance ops + txn link.
+4. Rework `/income` route around the definition + instance panels.
+5. Wire income link into `/transactions` form.
+6. Update `/dashboard` upcoming-income widget.
+7. Playwright: create a biweekly source with anchor 2026-07-24; open `/income` for Jul/Aug/Sep; confirm dates 07-24, 08-07, 08-21, 09-04, 09-18. Create a semimonthly source with days 15/31; confirm Feb clamps to 28/29. Create a variable source; confirm no expected amount, link a transaction, confirm received_amount shows.
 
 ## Assumptions to confirm
 
-- **Materialization is lazy** (on first `getBudget` for a month), not eager for all future months. Backfilling old months you haven't visited yet: on first view, they materialize using today's definition values — acceptable because there's no prior snapshot to preserve. OK?
-- **Deleting a definition** keeps historical instances intact (via `ON DELETE SET NULL`). They still render with their `name_snapshot`. OK, or would you rather deletions cascade and wipe history?
-- **`budget_line_items` table** stays in the DB unused (additive rule) but the UI for it is removed. OK?
-- **Definition scope window** (`start_month` / `end_month`): both optional, both nullable. Empty = "applies to every month." OK?
+- **Biweekly anchor**: on create, if user leaves anchor blank, default it to `next_date`. On edit, changing anchor recomputes future instances but leaves already-materialized past instances frozen (same freeze rule as Monthly Expenses). OK?
+- **Semimonthly day_2 = 31**: interpreted as "last day of month" (clamped per month). OK, or would you rather require an explicit "last day" toggle?
+- **Variable sources**: contribute 0 to Expected total; only Received total reflects them. Their expected instances still materialize on schedule so you have a row to link a transaction to. OK?
+- **Old `logRecurringIncomeReceived`**: kept as a no-op-safe leftover; UI stops using it. OK?
 
-Reply "go" to build, or edit any of the four assumptions.
+Reply "go" to build, or edit any assumption.
