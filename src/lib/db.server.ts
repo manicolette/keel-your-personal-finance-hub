@@ -212,8 +212,8 @@ export function ensureSchema(): Promise<void> {
     // neon's serverless client supports .query for raw multi-statement text.
     // But the tagged template only takes a single statement, so split manually.
     const statements = SCHEMA_SQL.split(/;\s*(?=CREATE|ALTER|INSERT|DROP|--)/i)
-      .map((s) => s.trim())
-      .filter((s) => s && !s.startsWith("--"));
+      .map((s) => s.replace(/^\s*(--[^\n]*\n)+/g, "").trim())
+      .filter(Boolean);
     for (const stmt of statements) {
       await sql.query(stmt);
     }
