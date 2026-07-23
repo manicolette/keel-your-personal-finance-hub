@@ -159,16 +159,16 @@ function TransactionsPage() {
     setInitialLinkId("");
   };
 
-  // Once instances load for the editing tx, pre-select the linked one.
+  // Once instances load for the editing tx, pre-select the linked one (one-shot per edit).
   const preLinked = useMemo(() => {
     if (!editing) return "";
     return instances.find((i) => i.transaction_id === editing.id)?.id ?? "";
   }, [editing, instances]);
-  if (editing && preLinked && preLinked !== initialLinkId && linkInstanceId === "" && initialLinkId === "") {
-    // one-shot sync when instance data arrives
+  useEffect(() => {
+    if (!editing) return;
     setInitialLinkId(preLinked);
     setLinkInstanceId(preLinked);
-  }
+  }, [editing, preLinked]);
 
   const initial: Partial<Transaction> = editing ?? {
     on_date: today(), account_id: accts[0]?.id, category_id: null, kind: "expense",
