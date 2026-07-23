@@ -72,6 +72,8 @@ export type RecurringIncome = {
   semimonthly_day_1: number | null;
   semimonthly_day_2: number | null;
   is_variable: boolean;
+  start_date: string | null;
+  end_date: string | null;
 };
 export type IncomeInstance = {
   id: string;
