@@ -1283,3 +1283,229 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async () =
     expenseMTD: n(totals[0]?.expense_mtd),
   };
 });
+
+// -------------------------- Monthly Expenses (recurring definitions) --------------------------
+const monthlyExpenseInput = z.object({
+  name: z.string().min(1, "Name is required").max(80),
+  category_id: z.string().uuid().nullable().optional(),
+  default_amount: z.coerce.number().nonnegative(),
+  currency: z.string().min(1).max(8).default("USD"),
+  active: z.boolean().default(true),
+  start_month: z.string().nullable().optional(),
+  end_month: z.string().nullable().optional(),
+  notes: z.string().max(500).nullable().optional(),
+  sort_order: z.coerce.number().int().default(0),
+});
+
+const monthStartOrNull = (v: string | null | undefined): string | null => {
+  if (!v) return null;
+  if (/^\d{4}-\d{2}$/.test(v)) return `${v}-01`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return `${v.slice(0, 7)}-01`;
+  return null;
+};
+
+export const listMonthlyExpenses = createServerFn({ method: "GET" }).handler(async () => {
+  await requireUnlocked();
+  const sql = await db();
+  const rows = (await sql`
+    SELECT id, name, category_id, default_amount, currency, active, start_month, end_month, notes, sort_order
+    FROM monthly_expenses ORDER BY sort_order, name`) as any[];
+  return rows.map((r) => ({
+    ...r,
+    default_amount: n(r.default_amount),
+    start_month: dOrNull(r.start_month),
+    end_month: dOrNull(r.end_month),
+    notes: s(r.notes),
+  })) as MonthlyExpense[];
+});
+
+export const createMonthlyExpense = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => monthlyExpenseInput.parse(data))
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    try {
+      const rows = (await sql`
+        INSERT INTO monthly_expenses (name, category_id, default_amount, currency, active, start_month, end_month, notes, sort_order)
+        VALUES (${data.name}, ${data.category_id ?? null}, ${data.default_amount}, ${data.currency}, ${data.active},
+                ${monthStartOrNull(data.start_month)}, ${monthStartOrNull(data.end_month)}, ${data.notes ?? null}, ${data.sort_order})
+        RETURNING id`) as any[];
+      return { id: rows[0].id as string };
+    } catch (err) {
+      throw new Error(`Failed to save monthly expense: ${(err as Error).message}`);
+    }
+  });
+
+export const updateMonthlyExpense = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => monthlyExpenseInput.extend({ id: z.string().uuid() }).parse(data))
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    try {
+      await sql`
+        UPDATE monthly_expenses SET
+          name = ${data.name}, category_id = ${data.category_id ?? null},
+          default_amount = ${data.default_amount}, currency = ${data.currency},
+          active = ${data.active},
+          start_month = ${monthStartOrNull(data.start_month)},
+          end_month = ${monthStartOrNull(data.end_month)},
+          notes = ${data.notes ?? null}, sort_order = ${data.sort_order}
+        WHERE id = ${data.id}`;
+      return { ok: true };
+    } catch (err) {
+      throw new Error(`Failed to update monthly expense: ${(err as Error).message}`);
+    }
+  });
+
+export const deleteMonthlyExpense = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => z.object({ id: z.string().uuid() }).parse(data))
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    // Instance rows keep their history via ON DELETE SET NULL on monthly_expense_id.
+    await sql`DELETE FROM monthly_expenses WHERE id = ${data.id}`;
+    return { ok: true };
+  });
+
+// -------------------------- Monthly Expense Instances --------------------------
+export const listMonthInstances = createServerFn({ method: "GET" })
+  .inputValidator((data: unknown) => z.object({ month: z.string().regex(/^\d{4}-\d{2}$/) }).parse(data))
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    const monthDate = `${data.month}-01`;
+    const rows = (await sql`
+      SELECT mei.id, mei.monthly_expense_id, mei.month, mei.name_snapshot, mei.category_id,
+             mei.planned_amount, mei.currency, mei.status, mei.transaction_id, mei.is_ad_hoc, mei.notes,
+             c.name AS category_name, c.color AS category_color,
+             t.amount AS tx_amount, t.on_date AS tx_date
+      FROM monthly_expense_instances mei
+      LEFT JOIN categories c ON c.id = mei.category_id
+      LEFT JOIN transactions t ON t.id = mei.transaction_id
+      WHERE mei.month = ${monthDate}::date
+      ORDER BY c.sort_order NULLS LAST, mei.name_snapshot`) as any[];
+    return rows.map((r) => ({
+      id: r.id,
+      monthly_expense_id: r.monthly_expense_id,
+      month: d(r.month),
+      name: r.name_snapshot,
+      category_id: r.category_id,
+      category_name: r.category_name,
+      category_color: r.category_color,
+      planned_amount: n(r.planned_amount),
+      currency: r.currency,
+      status: r.status,
+      transaction_id: r.transaction_id,
+      transaction_amount: r.tx_amount == null ? null : n(r.tx_amount),
+      transaction_date: r.tx_date == null ? null : d(r.tx_date),
+      is_ad_hoc: !!r.is_ad_hoc,
+      notes: s(r.notes),
+    })) as MonthlyExpenseInstance[];
+  });
+
+export const createAdHocInstance = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      month: z.string().regex(/^\d{4}-\d{2}$/),
+      name: z.string().min(1).max(80),
+      category_id: z.string().uuid().nullable().optional(),
+      planned_amount: z.coerce.number().nonnegative(),
+      currency: z.string().min(1).max(8).default("USD"),
+      notes: z.string().max(500).nullable().optional(),
+    }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    const monthDate = `${data.month}-01`;
+    const rows = (await sql`
+      INSERT INTO monthly_expense_instances
+        (monthly_expense_id, month, name_snapshot, category_id, planned_amount, currency, status, is_ad_hoc, notes)
+      VALUES (NULL, ${monthDate}, ${data.name}, ${data.category_id ?? null}, ${data.planned_amount}, ${data.currency}, 'pending', true, ${data.notes ?? null})
+      RETURNING id`) as any[];
+    return { id: rows[0].id as string };
+  });
+
+export const updateInstance = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      id: z.string().uuid(),
+      name: z.string().min(1).max(80).optional(),
+      category_id: z.string().uuid().nullable().optional(),
+      planned_amount: z.coerce.number().nonnegative().optional(),
+      notes: z.string().max(500).nullable().optional(),
+    }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    // Build a partial update — only overwrite provided fields.
+    const cur = (await sql`SELECT name_snapshot, category_id, planned_amount, notes FROM monthly_expense_instances WHERE id = ${data.id}`) as any[];
+    if (cur.length === 0) throw new Error("Instance not found");
+    const name = data.name ?? cur[0].name_snapshot;
+    const categoryId = data.category_id === undefined ? cur[0].category_id : data.category_id;
+    const planned = data.planned_amount === undefined ? n(cur[0].planned_amount) : data.planned_amount;
+    const notes = data.notes === undefined ? cur[0].notes : data.notes;
+    await sql`
+      UPDATE monthly_expense_instances
+      SET name_snapshot = ${name}, category_id = ${categoryId}, planned_amount = ${planned}, notes = ${notes}
+      WHERE id = ${data.id}`;
+    return { ok: true };
+  });
+
+export const setInstanceStatus = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      id: z.string().uuid(),
+      status: z.enum(["pending", "paused", "skipped"]),
+    }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    // Pausing/skipping also unlinks any transaction (can't be both paid and paused).
+    await sql`
+      UPDATE monthly_expense_instances
+      SET status = ${data.status},
+          transaction_id = CASE WHEN ${data.status} = 'pending' THEN transaction_id ELSE NULL END
+      WHERE id = ${data.id}`;
+    return { ok: true };
+  });
+
+export const deleteInstance = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => z.object({ id: z.string().uuid() }).parse(data))
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    // Only allow deleting ad-hoc rows; def-backed instances should be paused instead.
+    const rows = (await sql`SELECT is_ad_hoc FROM monthly_expense_instances WHERE id = ${data.id}`) as any[];
+    if (rows.length === 0) return { ok: true };
+    if (!rows[0].is_ad_hoc) throw new Error("Delete the Monthly Expense definition instead, or pause this month.");
+    await sql`DELETE FROM monthly_expense_instances WHERE id = ${data.id}`;
+    return { ok: true };
+  });
+
+export const linkTransactionToInstance = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      instance_id: z.string().uuid(),
+      transaction_id: z.string().uuid(),
+    }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    // A transaction can only be linked to one instance at a time.
+    await sql`UPDATE monthly_expense_instances SET transaction_id = NULL, status = 'pending' WHERE transaction_id = ${data.transaction_id} AND id <> ${data.instance_id}`;
+    await sql`UPDATE monthly_expense_instances SET transaction_id = ${data.transaction_id}, status = 'paid' WHERE id = ${data.instance_id}`;
+    return { ok: true };
+  });
+
+export const unlinkInstance = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => z.object({ id: z.string().uuid() }).parse(data))
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    await sql`UPDATE monthly_expense_instances SET transaction_id = NULL, status = 'pending' WHERE id = ${data.id}`;
+    return { ok: true };
+  });
