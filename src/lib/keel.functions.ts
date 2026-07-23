@@ -782,7 +782,7 @@ async function materializeIncomeMonth(sqlAny: any, monthIso: string): Promise<vo
         INSERT INTO income_instances
           (recurring_income_id, expected_date, name_snapshot, expected_amount, currency, status)
         VALUES (${src.id}, ${dateIso}, ${src.name}, ${expectedAmt}, ${src.currency}, 'expected')
-        ON CONFLICT (recurring_income_id, expected_date) DO NOTHING`;
+        ON CONFLICT (recurring_income_id, expected_date) WHERE recurring_income_id IS NOT NULL DO NOTHING`;
     }
   }
 }
