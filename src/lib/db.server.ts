@@ -203,6 +203,41 @@ CREATE TABLE IF NOT EXISTS recurring_income (
 
 -- Additive: transaction receipt
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS receipt_url text;
+
+-- Additive: Monthly Expenses (recurring definitions, like Subscriptions)
+CREATE TABLE IF NOT EXISTS monthly_expenses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  category_id uuid REFERENCES categories(id) ON DELETE SET NULL,
+  default_amount numeric(14,2) NOT NULL DEFAULT 0,
+  currency text NOT NULL DEFAULT 'USD',
+  active boolean NOT NULL DEFAULT true,
+  start_month date,
+  end_month date,
+  notes text,
+  sort_order int NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Per-month materialized instances (historical snapshots) + ad-hoc one-offs.
+CREATE TABLE IF NOT EXISTS monthly_expense_instances (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  monthly_expense_id uuid REFERENCES monthly_expenses(id) ON DELETE SET NULL,
+  month date NOT NULL,
+  name_snapshot text NOT NULL,
+  category_id uuid REFERENCES categories(id) ON DELETE SET NULL,
+  planned_amount numeric(14,2) NOT NULL,
+  currency text NOT NULL DEFAULT 'USD',
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','paused','skipped')),
+  transaction_id uuid REFERENCES transactions(id) ON DELETE SET NULL,
+  is_ad_hoc boolean NOT NULL DEFAULT false,
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS mei_def_month_uidx ON monthly_expense_instances(monthly_expense_id, month) WHERE monthly_expense_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS mei_month_idx ON monthly_expense_instances(month);
+CREATE INDEX IF NOT EXISTS mei_category_month_idx ON monthly_expense_instances(category_id, month);
+CREATE INDEX IF NOT EXISTS mei_txn_idx ON monthly_expense_instances(transaction_id);
 `;
 
 export function ensureSchema(): Promise<void> {
