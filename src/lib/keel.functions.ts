@@ -610,7 +610,7 @@ export const createRecurringIncome = createServerFn({ method: "POST" })
   });
 
 export const updateRecurringIncome = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => incomeInput.extend({ id: z.string().uuid() }).parse(data))
+  .inputValidator((data: unknown) => incomeUpdateInput.parse(data))
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
