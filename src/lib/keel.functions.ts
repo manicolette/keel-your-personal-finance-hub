@@ -396,6 +396,8 @@ export const deleteTransaction = createServerFn({ method: "POST" })
     const sql = await db();
     // Unlink any monthly-expense instances first so their status flips back to pending.
     await sql`UPDATE monthly_expense_instances SET transaction_id = NULL, status = 'pending' WHERE transaction_id = ${data.id}`;
+    // Same for income instances: revert to expected + clear received amount.
+    await sql`UPDATE income_instances SET transaction_id = NULL, status = 'expected', received_amount = NULL WHERE transaction_id = ${data.id}`;
     await sql`DELETE FROM transactions WHERE id = ${data.id}`;
     return { ok: true };
   });
