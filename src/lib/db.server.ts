@@ -156,6 +156,53 @@ CREATE TABLE IF NOT EXISTS reminders (
   notes text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Additive: debt enhancements
+ALTER TABLE debts ADD COLUMN IF NOT EXISTS original_balance numeric(14,2);
+ALTER TABLE debts ADD COLUMN IF NOT EXISTS start_date date;
+ALTER TABLE debts ADD COLUMN IF NOT EXISTS paid_off_at date;
+
+-- Additive: debt_payments
+CREATE TABLE IF NOT EXISTS debt_payments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  debt_id uuid NOT NULL REFERENCES debts(id) ON DELETE CASCADE,
+  amount numeric(14,2) NOT NULL,
+  payment_date date NOT NULL,
+  note text,
+  account_id uuid REFERENCES accounts(id) ON DELETE SET NULL,
+  transaction_id uuid REFERENCES transactions(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS debt_payments_debt_date_idx ON debt_payments(debt_id, payment_date DESC);
+
+-- Additive: budget line items (named sub-items under a budget_line)
+CREATE TABLE IF NOT EXISTS budget_line_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  budget_line_id uuid NOT NULL REFERENCES budget_lines(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  amount numeric(14,2) NOT NULL DEFAULT 0,
+  sort_order int NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS budget_line_items_line_idx ON budget_line_items(budget_line_id);
+
+-- Additive: recurring income
+CREATE TABLE IF NOT EXISTS recurring_income (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  amount numeric(14,2) NOT NULL,
+  currency text NOT NULL DEFAULT 'USD',
+  frequency text NOT NULL CHECK (frequency IN ('weekly','monthly','quarterly','yearly')),
+  next_date date NOT NULL,
+  account_id uuid REFERENCES accounts(id) ON DELETE SET NULL,
+  category_id uuid REFERENCES categories(id) ON DELETE SET NULL,
+  active boolean NOT NULL DEFAULT true,
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Additive: transaction receipt
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS receipt_url text;
 `;
 
 export function ensureSchema(): Promise<void> {
@@ -164,8 +211,8 @@ export function ensureSchema(): Promise<void> {
   _schemaReady = (async () => {
     // neon's serverless client supports .query for raw multi-statement text.
     // But the tagged template only takes a single statement, so split manually.
-    const statements = SCHEMA_SQL.split(/;\s*(?=CREATE|ALTER|INSERT|DROP)/i)
-      .map((s) => s.trim())
+    const statements = SCHEMA_SQL.split(/;\s*(?=CREATE|ALTER|INSERT|DROP|--)/i)
+      .map((s) => s.replace(/^\s*(--[^\n]*\n)+/g, "").trim())
       .filter(Boolean);
     for (const stmt of statements) {
       await sql.query(stmt);

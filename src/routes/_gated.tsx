@@ -40,6 +40,7 @@ const nav = [
   { to: "/transactions", label: "Transactions", icon: ArrowLeftRight },
   { to: "/budget", label: "Budget", icon: PieChart },
   { to: "/subscriptions", label: "Subscriptions", icon: Repeat },
+  { to: "/income", label: "Income", icon: TrendingUp },
   { to: "/constants", label: "Constants", icon: PinIcon },
   { to: "/debts", label: "Debts", icon: CreditCard },
   { to: "/goals", label: "Goals", icon: Target },

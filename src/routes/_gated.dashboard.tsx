@@ -18,7 +18,7 @@ export const Route = createFileRoute("/_gated/dashboard")({
 
 function DashboardPage() {
   const { data } = useSuspenseQuery(dashboardQuery);
-  const nw = data.latestNetWorth;
+  const nw = data.liveNetWorth;
 
   return (
     <div className="space-y-5">
@@ -28,9 +28,14 @@ function DashboardPage() {
         <Card>
           <div className="text-xs uppercase tracking-wide text-muted-foreground">Net Worth</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums">
-            {nw ? money(nw.net_worth) : "—"}
+            {money(nw.net_worth, nw.base_currency)}
           </div>
-          {nw && <div className="mt-1 text-xs text-muted-foreground">as of {nw.on_date}</div>}
+          <div className="mt-1 text-xs text-muted-foreground">
+            in {nw.base_currency}
+            {nw.unconverted_count > 0 && (
+              <span className="ml-1 text-[color:var(--negative)]">· {nw.unconverted_count} unconverted</span>
+            )}
+          </div>
         </Card>
         <Card>
           <div className="text-xs uppercase tracking-wide text-muted-foreground">Income (MTD)</div>
@@ -47,12 +52,12 @@ function DashboardPage() {
         <Card>
           <div className="text-xs uppercase tracking-wide text-muted-foreground">Total Debt</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums">
-            {money(data.debtsTotal)}
+            {money(nw.debts_total, nw.base_currency)}
           </div>
         </Card>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-3">
         <Card>
           <h2 className="mb-3 text-sm font-semibold">Upcoming subscriptions</h2>
           {data.upcomingSubscriptions.length === 0 ? (
@@ -66,6 +71,24 @@ function DashboardPage() {
                     <div className="text-xs text-muted-foreground">{s.next_charge_date}</div>
                   </div>
                   <div className="tabular-nums">{money(s.amount, s.currency)}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+        <Card>
+          <h2 className="mb-3 text-sm font-semibold">Upcoming income</h2>
+          {data.upcomingIncome.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No recurring income.</p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {data.upcomingIncome.map((s) => (
+                <li key={s.id} className="flex items-center justify-between py-2 text-sm">
+                  <div>
+                    <div className="font-medium">{s.name}</div>
+                    <div className="text-xs text-muted-foreground">{s.next_date}</div>
+                  </div>
+                  <div className="tabular-nums text-[color:var(--positive)]">{money(s.amount, s.currency)}</div>
                 </li>
               ))}
             </ul>

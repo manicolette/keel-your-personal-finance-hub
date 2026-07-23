@@ -12,11 +12,13 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as UnlockRouteImport } from './routes/unlock'
 import { Route as GatedRouteImport } from './routes/_gated'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiUploadReceiptRouteImport } from './routes/api/upload-receipt'
 import { Route as GatedTransactionsRouteImport } from './routes/_gated.transactions'
 import { Route as GatedSubscriptionsRouteImport } from './routes/_gated.subscriptions'
 import { Route as GatedSettingsRouteImport } from './routes/_gated.settings'
 import { Route as GatedRemindersRouteImport } from './routes/_gated.reminders'
 import { Route as GatedNetworthRouteImport } from './routes/_gated.networth'
+import { Route as GatedIncomeRouteImport } from './routes/_gated.income'
 import { Route as GatedGoalsRouteImport } from './routes/_gated.goals'
 import { Route as GatedFxRouteImport } from './routes/_gated.fx'
 import { Route as GatedDebtsRouteImport } from './routes/_gated.debts'
@@ -38,6 +40,11 @@ const GatedRoute = GatedRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiUploadReceiptRoute = ApiUploadReceiptRouteImport.update({
+  id: '/api/upload-receipt',
+  path: '/api/upload-receipt',
   getParentRoute: () => rootRouteImport,
 } as any)
 const GatedTransactionsRoute = GatedTransactionsRouteImport.update({
@@ -63,6 +70,11 @@ const GatedRemindersRoute = GatedRemindersRouteImport.update({
 const GatedNetworthRoute = GatedNetworthRouteImport.update({
   id: '/networth',
   path: '/networth',
+  getParentRoute: () => GatedRoute,
+} as any)
+const GatedIncomeRoute = GatedIncomeRouteImport.update({
+  id: '/income',
+  path: '/income',
   getParentRoute: () => GatedRoute,
 } as any)
 const GatedGoalsRoute = GatedGoalsRouteImport.update({
@@ -117,11 +129,13 @@ export interface FileRoutesByFullPath {
   '/debts': typeof GatedDebtsRoute
   '/fx': typeof GatedFxRoute
   '/goals': typeof GatedGoalsRoute
+  '/income': typeof GatedIncomeRoute
   '/networth': typeof GatedNetworthRoute
   '/reminders': typeof GatedRemindersRoute
   '/settings': typeof GatedSettingsRoute
   '/subscriptions': typeof GatedSubscriptionsRoute
   '/transactions': typeof GatedTransactionsRoute
+  '/api/upload-receipt': typeof ApiUploadReceiptRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -134,11 +148,13 @@ export interface FileRoutesByTo {
   '/debts': typeof GatedDebtsRoute
   '/fx': typeof GatedFxRoute
   '/goals': typeof GatedGoalsRoute
+  '/income': typeof GatedIncomeRoute
   '/networth': typeof GatedNetworthRoute
   '/reminders': typeof GatedRemindersRoute
   '/settings': typeof GatedSettingsRoute
   '/subscriptions': typeof GatedSubscriptionsRoute
   '/transactions': typeof GatedTransactionsRoute
+  '/api/upload-receipt': typeof ApiUploadReceiptRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -153,11 +169,13 @@ export interface FileRoutesById {
   '/_gated/debts': typeof GatedDebtsRoute
   '/_gated/fx': typeof GatedFxRoute
   '/_gated/goals': typeof GatedGoalsRoute
+  '/_gated/income': typeof GatedIncomeRoute
   '/_gated/networth': typeof GatedNetworthRoute
   '/_gated/reminders': typeof GatedRemindersRoute
   '/_gated/settings': typeof GatedSettingsRoute
   '/_gated/subscriptions': typeof GatedSubscriptionsRoute
   '/_gated/transactions': typeof GatedTransactionsRoute
+  '/api/upload-receipt': typeof ApiUploadReceiptRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -172,11 +190,13 @@ export interface FileRouteTypes {
     | '/debts'
     | '/fx'
     | '/goals'
+    | '/income'
     | '/networth'
     | '/reminders'
     | '/settings'
     | '/subscriptions'
     | '/transactions'
+    | '/api/upload-receipt'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -189,11 +209,13 @@ export interface FileRouteTypes {
     | '/debts'
     | '/fx'
     | '/goals'
+    | '/income'
     | '/networth'
     | '/reminders'
     | '/settings'
     | '/subscriptions'
     | '/transactions'
+    | '/api/upload-receipt'
   id:
     | '__root__'
     | '/'
@@ -207,17 +229,20 @@ export interface FileRouteTypes {
     | '/_gated/debts'
     | '/_gated/fx'
     | '/_gated/goals'
+    | '/_gated/income'
     | '/_gated/networth'
     | '/_gated/reminders'
     | '/_gated/settings'
     | '/_gated/subscriptions'
     | '/_gated/transactions'
+    | '/api/upload-receipt'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   GatedRoute: typeof GatedRouteWithChildren
   UnlockRoute: typeof UnlockRoute
+  ApiUploadReceiptRoute: typeof ApiUploadReceiptRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -241,6 +266,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/upload-receipt': {
+      id: '/api/upload-receipt'
+      path: '/api/upload-receipt'
+      fullPath: '/api/upload-receipt'
+      preLoaderRoute: typeof ApiUploadReceiptRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_gated/transactions': {
@@ -276,6 +308,13 @@ declare module '@tanstack/react-router' {
       path: '/networth'
       fullPath: '/networth'
       preLoaderRoute: typeof GatedNetworthRouteImport
+      parentRoute: typeof GatedRoute
+    }
+    '/_gated/income': {
+      id: '/_gated/income'
+      path: '/income'
+      fullPath: '/income'
+      preLoaderRoute: typeof GatedIncomeRouteImport
       parentRoute: typeof GatedRoute
     }
     '/_gated/goals': {
@@ -346,6 +385,7 @@ interface GatedRouteChildren {
   GatedDebtsRoute: typeof GatedDebtsRoute
   GatedFxRoute: typeof GatedFxRoute
   GatedGoalsRoute: typeof GatedGoalsRoute
+  GatedIncomeRoute: typeof GatedIncomeRoute
   GatedNetworthRoute: typeof GatedNetworthRoute
   GatedRemindersRoute: typeof GatedRemindersRoute
   GatedSettingsRoute: typeof GatedSettingsRoute
@@ -362,6 +402,7 @@ const GatedRouteChildren: GatedRouteChildren = {
   GatedDebtsRoute: GatedDebtsRoute,
   GatedFxRoute: GatedFxRoute,
   GatedGoalsRoute: GatedGoalsRoute,
+  GatedIncomeRoute: GatedIncomeRoute,
   GatedNetworthRoute: GatedNetworthRoute,
   GatedRemindersRoute: GatedRemindersRoute,
   GatedSettingsRoute: GatedSettingsRoute,
@@ -375,17 +416,8 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   GatedRoute: GatedRouteWithChildren,
   UnlockRoute: UnlockRoute,
+  ApiUploadReceiptRoute: ApiUploadReceiptRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}

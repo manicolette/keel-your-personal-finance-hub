@@ -3,25 +3,36 @@ import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@ta
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import { toast } from "sonner";
-import { createNetWorth, deleteNetWorth, listNetWorth } from "@/lib/keel.functions";
+import { createNetWorth, deleteNetWorth, getLiveNetWorth, listNetWorth } from "@/lib/keel.functions";
 import { Button, Card, EmptyState, Field, PageHeader, Table, Td, TextInput, Textarea, Th, money } from "@/components/keel-ui";
 
 const nwQuery = queryOptions({ queryKey: ["networth"], queryFn: () => listNetWorth() });
+const liveQuery = queryOptions({ queryKey: ["networth-live"], queryFn: () => getLiveNetWorth() });
 const today = () => new Date().toISOString().slice(0, 10);
 
 export const Route = createFileRoute("/_gated/networth")({
-  loader: ({ context }) => context.queryClient.ensureQueryData(nwQuery),
+  loader: async ({ context }) => {
+    await Promise.all([
+      context.queryClient.ensureQueryData(nwQuery),
+      context.queryClient.ensureQueryData(liveQuery),
+    ]);
+  },
   component: NetWorthPage,
   errorComponent: ({ error }) => <div role="alert" className="text-sm text-destructive">{error.message}</div>,
 });
 
 function NetWorthPage() {
   const { data: snaps } = useSuspenseQuery(nwQuery);
+  const { data: live } = useSuspenseQuery(liveQuery);
   const qc = useQueryClient();
   const create = useServerFn(createNetWorth);
   const remove = useServerFn(deleteNetWorth);
   const [showForm, setShowForm] = useState(false);
-  const invalidate = () => { qc.invalidateQueries({ queryKey: ["networth"] }); qc.invalidateQueries({ queryKey: ["dashboard"] }); };
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["networth"] });
+    qc.invalidateQueries({ queryKey: ["networth-live"] });
+    qc.invalidateQueries({ queryKey: ["dashboard"] });
+  };
 
   const mCreate = useMutation({ mutationFn: create,
     onSuccess: () => { toast.success("Snapshot saved"); invalidate(); setShowForm(false); },
@@ -32,8 +43,28 @@ function NetWorthPage() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Net Worth" subtitle="Point-in-time snapshots."
+      <PageHeader title="Net Worth" subtitle="Live total across all accounts + snapshots over time."
         actions={!showForm && <Button onClick={() => setShowForm(true)}>Add snapshot</Button>} />
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Card>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">Assets (live, in {live.base_currency})</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums">{money(live.assets_total, live.base_currency)}</div>
+        </Card>
+        <Card>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">Debts (live)</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums">{money(live.debts_total, live.base_currency)}</div>
+        </Card>
+        <Card>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">Net Worth (live)</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums">{money(live.net_worth, live.base_currency)}</div>
+          {live.unconverted_count > 0 && (
+            <div className="mt-1 text-xs text-[color:var(--negative)]">
+              {live.unconverted_count} account(s) unconverted — add an FX rate.
+            </div>
+          )}
+        </Card>
+      </div>
 
       {showForm && (
         <Card>
@@ -48,8 +79,8 @@ function NetWorthPage() {
             }});
           }}>
             <Field label="Date"><TextInput type="date" name="on_date" defaultValue={today()} required /></Field>
-            <Field label="Assets total"><TextInput type="number" step="0.01" name="assets_total" defaultValue="0" /></Field>
-            <Field label="Debts total"><TextInput type="number" step="0.01" name="debts_total" defaultValue="0" /></Field>
+            <Field label="Assets total"><TextInput type="number" step="0.01" name="assets_total" defaultValue={String(live.assets_total)} /></Field>
+            <Field label="Debts total"><TextInput type="number" step="0.01" name="debts_total" defaultValue={String(live.debts_total)} /></Field>
             <div className="sm:col-span-2 lg:col-span-4">
               <Field label="Notes"><Textarea name="notes" /></Field>
             </div>
