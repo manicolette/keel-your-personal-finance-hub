@@ -1,22 +1,22 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-
 import { useServerFn } from "@tanstack/react-start";
 import { zodValidator, fallback } from "@tanstack/zod-adapter";
 import { z } from "zod";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
-  createBudgetLineItem,
-  deleteBudgetLine,
-  deleteBudgetLineItem,
+  createAdHocInstance,
+  deleteInstance,
   getBudget,
   listCategories,
-  updateBudgetLineItem,
-  upsertBudgetLine,
-  type BudgetLine,
+  setInstanceStatus,
+  unlinkInstance,
+  updateInstance,
+  type BudgetGroup,
+  type MonthlyExpenseInstance,
 } from "@/lib/keel.functions";
-import { Button, Card, EmptyState, PageHeader, Select, Table, Td, TextInput, Th, money } from "@/components/keel-ui";
+import { Button, Card, EmptyState, PageHeader, Select, TextInput, money } from "@/components/keel-ui";
 
 const budgetQueryOptions = (month: string) =>
   queryOptions({
@@ -29,7 +29,7 @@ const catsQueryOptions = queryOptions({ queryKey: ["categories"], queryFn: () =>
 const currentMonth = () => new Date().toISOString().slice(0, 7);
 const shiftMonth = (m: string, delta: number) => {
   const [y, mm] = m.split("-").map(Number);
-  const d = new Date(Date.UTC(y, (mm - 1) + delta, 1));
+  const d = new Date(Date.UTC(y, mm - 1 + delta, 1));
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 };
 
@@ -56,27 +56,18 @@ function BudgetPage() {
   const go = (month: string) => navigate({ to: "/budget", search: { month } });
   const { data } = useSuspenseQuery(budgetQueryOptions(month));
   const { data: cats } = useSuspenseQuery(catsQueryOptions);
-  const qc = useQueryClient();
-  const upsert = useServerFn(upsertBudgetLine);
-  const remove = useServerFn(deleteBudgetLine);
+  const expenseCats = cats.filter((c) => c.kind === "expense" && !c.archived);
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["budget", month] });
-  const mUpsert = useMutation({ mutationFn: upsert,
-    onSuccess: () => { toast.success("Saved"); invalidate(); },
-    onError: (e: Error) => toast.error(e.message) });
-  const mDelete = useMutation({ mutationFn: remove,
-    onSuccess: () => { toast.success("Removed"); invalidate(); },
-    onError: (e: Error) => toast.error(e.message) });
-
-  const usedIds = new Set(data.lines.map((l) => l.category_id));
-  const addable = cats.filter((c) => c.kind === "expense" && !usedIds.has(c.id) && !c.archived);
-
-  const plannedTotal = data.lines.reduce((s, l) => s + l.planned, 0);
-  const actualTotal = data.lines.reduce((s, l) => s + l.actual, 0);
+  const plannedTotal = data.groups.reduce((s, g) => s + g.planned, 0);
+  const actualTotal = data.groups.reduce((s, g) => s + g.actual, 0);
+  const paidCount = data.groups.reduce((s, g) => s + g.instances.filter((i) => i.status === "paid").length, 0);
+  const pendingCount = data.groups.reduce((s, g) => s + g.instances.filter((i) => i.status === "pending").length, 0);
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Budget" subtitle="Plan monthly spending by category."
+      <PageHeader
+        title="Budget"
+        subtitle="Everything you're expected to pay this month — and what's actually been paid."
         actions={
           <div className="flex items-center gap-2">
             <Link
@@ -104,9 +95,10 @@ function BudgetPage() {
               className="inline-flex h-8 items-center justify-center rounded-md px-2.5 text-xs font-medium text-foreground hover:bg-muted aria-disabled:pointer-events-none aria-disabled:opacity-50"
             >Today</Link>
           </div>
-        } />
+        }
+      />
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-4">
         <Card>
           <div className="text-xs uppercase tracking-wide text-muted-foreground">Planned</div>
           <div className="mt-1 text-xl font-semibold tabular-nums">{money(plannedTotal)}</div>
@@ -119,162 +111,216 @@ function BudgetPage() {
           <div className="text-xs uppercase tracking-wide text-muted-foreground">Remaining</div>
           <div className="mt-1 text-xl font-semibold tabular-nums">{money(plannedTotal - actualTotal)}</div>
         </Card>
+        <Card>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">Status</div>
+          <div className="mt-1 text-sm font-medium tabular-nums">
+            <span className="text-[color:var(--positive)]">{paidCount} paid</span>
+            <span className="mx-1 text-muted-foreground">·</span>
+            <span>{pendingCount} pending</span>
+          </div>
+        </Card>
       </div>
 
-      {addable.length > 0 && (
-        <Card>
-          <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => {
-            e.preventDefault();
-            const fd = new FormData(e.currentTarget);
-            const category_id = String(fd.get("category_id") || "");
-            const planned = Number(fd.get("planned") || 0);
-            if (!category_id) return;
-            mUpsert.mutate({ data: { month_id: data.month.id, category_id, planned, notes: null } });
-            (e.currentTarget as HTMLFormElement).reset();
-          }}>
-            <label className="flex flex-col gap-1 text-sm">
-              <span className="font-medium">Category</span>
-              <Select name="category_id" defaultValue="">
-                <option value="" disabled>Choose…</option>
-                {addable.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </Select>
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              <span className="font-medium">Planned</span>
-              <TextInput type="number" step="0.01" name="planned" defaultValue="0" />
-            </label>
-            <Button type="submit" disabled={mUpsert.isPending}>Add line</Button>
-          </form>
-        </Card>
-      )}
+      <div className="rounded-md border border-dashed border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+        Manage recurring items on the{" "}
+        <Link to="/monthly-expenses" className="font-medium text-primary underline">Monthly Expenses</Link>{" "}
+        page — anything active there shows up here automatically. Use "Add one-off" below only for an unusual expense that isn't part of your normal monthly plan.
+      </div>
 
-      {data.lines.length === 0 ? (
-        <EmptyState>No budget lines for {month} yet. Add expense categories above.</EmptyState>
+      {data.groups.length === 0 ? (
+        <EmptyState>
+          No expenses budgeted for {month}. Add a recurring one on the{" "}
+          <Link to="/monthly-expenses" className="text-primary underline">Monthly Expenses</Link>{" "}
+          page, or add a one-off below.
+        </EmptyState>
       ) : (
-        <div className="space-y-3">
-          {data.lines.map((l) => (
-            <BudgetLineCard
-              key={l.id}
-              line={l}
-              monthId={data.month.id}
-              onUpsertPlanned={(val) => mUpsert.mutate({ data: { month_id: data.month.id, category_id: l.category_id, planned: val, notes: l.notes } })}
-              onRemove={() => confirm(`Remove ${l.category_name} from this month?`) && mDelete.mutate({ data: { id: l.id } })}
-              invalidate={invalidate}
-            />
+        <div className="space-y-4">
+          {data.groups.map((g) => (
+            <GroupCard key={g.category_id ?? "null"} group={g} month={month} />
           ))}
         </div>
       )}
+
+      <AdHocForm month={month} expenseCats={expenseCats} />
     </div>
   );
 }
 
-function BudgetLineCard({
-  line, onUpsertPlanned, onRemove, invalidate,
-}: {
-  line: BudgetLine;
-  monthId: string;
-  onUpsertPlanned: (val: number) => void;
-  onRemove: () => void;
-  invalidate: () => void;
-}) {
-  const [expanded, setExpanded] = useState(line.items.length > 0);
-  const createItem = useServerFn(createBudgetLineItem);
-  const updateItem = useServerFn(updateBudgetLineItem);
-  const deleteItem = useServerFn(deleteBudgetLineItem);
-  const mCreate = useMutation({ mutationFn: createItem, onSuccess: () => { toast.success("Item added"); invalidate(); }, onError: (e: Error) => toast.error(e.message) });
-  const mUpdate = useMutation({ mutationFn: updateItem, onSuccess: () => invalidate(), onError: (e: Error) => toast.error(e.message) });
-  const mDelete = useMutation({ mutationFn: deleteItem, onSuccess: () => { toast.success("Removed"); invalidate(); }, onError: (e: Error) => toast.error(e.message) });
+function useInvalidateBudget(month: string) {
+  const qc = useQueryClient();
+  return () => {
+    qc.invalidateQueries({ queryKey: ["budget", month] });
+    qc.invalidateQueries({ queryKey: ["transactions"] });
+  };
+}
 
-  const pct = line.planned > 0 ? Math.min(150, Math.round((line.actual / line.planned) * 100)) : 0;
-  const over = line.actual > line.planned;
+function GroupCard({ group, month }: { group: BudgetGroup; month: string }) {
+  const pct = group.planned > 0 ? Math.round((group.actual / group.planned) * 100) : 0;
+  const over = group.actual > group.planned && group.planned > 0;
 
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-3">
-        <button onClick={() => setExpanded(!expanded)} className="flex items-center gap-2 text-left">
-          <span className="text-xs text-muted-foreground w-3">{expanded ? "▾" : "▸"}</span>
-          <span className="inline-block h-3 w-3 rounded-full" style={{ background: line.category_color }} />
-          <span className="font-medium">{line.category_name}</span>
-          {line.planned_from_items && <span className="rounded bg-muted px-1.5 text-[10px] font-medium text-muted-foreground">SUM OF {line.items.length}</span>}
-        </button>
-        <div className="ml-auto flex items-center gap-3">
+        <span className="inline-block h-3 w-3 rounded-full" style={{ background: group.category_color }} />
+        <span className="font-medium">{group.category_name}</span>
+        <span className="text-xs text-muted-foreground">{group.instances.length} item{group.instances.length === 1 ? "" : "s"}</span>
+        <div className="ml-auto flex items-center gap-4">
           <div className="text-right">
             <div className="text-xs text-muted-foreground">Planned</div>
-            {line.planned_from_items ? (
-              <div className="w-28 text-right text-sm tabular-nums font-medium">{money(line.planned)}</div>
-            ) : (
-              <input
-                type="number" step="0.01"
-                defaultValue={line.planned}
-                key={line.planned}
-                onBlur={(e) => {
-                  const val = Number(e.target.value);
-                  if (val !== line.planned) onUpsertPlanned(val);
-                }}
-                className="w-28 rounded-md border border-input bg-background px-2 py-1 text-right text-sm tabular-nums"
-              />
-            )}
+            <div className="text-sm tabular-nums font-medium">{money(group.planned)}</div>
           </div>
           <div className="text-right">
             <div className="text-xs text-muted-foreground">Actual</div>
-            <div className={`text-sm tabular-nums ${over ? "text-[color:var(--negative)]" : ""}`}>{money(line.actual)}</div>
+            <div className={`text-sm tabular-nums ${over ? "text-[color:var(--negative)]" : ""}`}>{money(group.actual)}</div>
           </div>
           <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
             <div className={`h-full ${over ? "bg-[color:var(--negative)]" : "bg-primary"}`} style={{ width: `${Math.min(100, pct)}%` }} />
           </div>
-          <Button size="sm" variant="danger" onClick={onRemove}>×</Button>
         </div>
       </div>
 
-      {expanded && (
-        <div className="mt-3 rounded-md border border-border bg-muted/30 p-2 space-y-2">
-          {line.items.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No named items yet. Add sub-items to itemize this category — the total will sum automatically.</p>
-          ) : (
-            <ul className="divide-y divide-border rounded-md bg-background">
-              {line.items.map((it) => (
-                <li key={it.id} className="flex items-center gap-2 px-2 py-1">
-                  <input
-                    defaultValue={it.name}
-                    onBlur={(e) => {
-                      const name = e.target.value.trim();
-                      if (name && name !== it.name) mUpdate.mutate({ data: { id: it.id, name, amount: it.amount } });
-                    }}
-                    className="flex-1 rounded border border-transparent bg-transparent px-1.5 py-1 text-sm focus:border-input focus:bg-background focus:outline-none"
-                  />
-                  <input
-                    type="number" step="0.01"
-                    defaultValue={it.amount}
-                    onBlur={(e) => {
-                      const amount = Number(e.target.value);
-                      if (amount !== it.amount) mUpdate.mutate({ data: { id: it.id, name: it.name, amount } });
-                    }}
-                    className="w-24 rounded border border-transparent bg-transparent px-1.5 py-1 text-right text-sm tabular-nums focus:border-input focus:bg-background focus:outline-none"
-                  />
-                  <button
-                    onClick={() => confirm(`Remove ${it.name}?`) && mDelete.mutate({ data: { id: it.id } })}
-                    className="text-muted-foreground hover:text-destructive"
-                    aria-label="Remove item"
-                  >×</button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <form className="flex items-end gap-2" onSubmit={(e) => {
-            e.preventDefault();
-            const fd = new FormData(e.currentTarget);
-            const name = String(fd.get("name") || "").trim();
-            const amount = Number(fd.get("amount") || 0);
-            if (!name) return;
-            mCreate.mutate({ data: { budget_line_id: line.id, name, amount, sort_order: line.items.length } });
-            (e.currentTarget as HTMLFormElement).reset();
-          }}>
-            <TextInput name="name" placeholder="Item name (e.g. Rent)" className="flex-1" required />
-            <TextInput type="number" step="0.01" name="amount" placeholder="0.00" className="w-28" defaultValue="0" />
-            <Button size="sm" type="submit">+ Item</Button>
-          </form>
-        </div>
+      {group.instances.length > 0 && (
+        <ul className="mt-3 divide-y divide-border rounded-md border border-border bg-background">
+          {group.instances.map((inst) => (
+            <InstanceRow key={inst.id} inst={inst} month={month} />
+          ))}
+        </ul>
       )}
+    </Card>
+  );
+}
+
+function StatusBadge({ status }: { status: MonthlyExpenseInstance["status"] }) {
+  const map: Record<string, string> = {
+    paid: "bg-emerald-100 text-emerald-800",
+    pending: "bg-amber-100 text-amber-800",
+    paused: "bg-slate-200 text-slate-700",
+    skipped: "bg-slate-200 text-slate-700",
+  };
+  return <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ${map[status]}`}>{status}</span>;
+}
+
+function InstanceRow({ inst, month }: { inst: MonthlyExpenseInstance; month: string }) {
+  const invalidate = useInvalidateBudget(month);
+  const update = useServerFn(updateInstance);
+  const status = useServerFn(setInstanceStatus);
+  const unlink = useServerFn(unlinkInstance);
+  const remove = useServerFn(deleteInstance);
+  const mUpdate = useMutation({ mutationFn: update, onSuccess: invalidate, onError: (e: Error) => toast.error(e.message) });
+  const mStatus = useMutation({ mutationFn: status, onSuccess: invalidate, onError: (e: Error) => toast.error(e.message) });
+  const mUnlink = useMutation({ mutationFn: unlink, onSuccess: () => { toast.success("Unlinked"); invalidate(); }, onError: (e: Error) => toast.error(e.message) });
+  const mDelete = useMutation({ mutationFn: remove, onSuccess: () => { toast.success("Removed"); invalidate(); }, onError: (e: Error) => toast.error(e.message) });
+
+  const [editingName, setEditingName] = useState(false);
+
+  return (
+    <li className="flex flex-wrap items-center gap-2 px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          {editingName ? (
+            <input
+              autoFocus
+              defaultValue={inst.name}
+              onBlur={(e) => {
+                const name = e.target.value.trim();
+                setEditingName(false);
+                if (name && name !== inst.name) mUpdate.mutate({ data: { id: inst.id, name } });
+              }}
+              onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+              className="rounded border border-input bg-background px-1.5 py-0.5 text-sm"
+            />
+          ) : (
+            <button onClick={() => setEditingName(true)} className="text-sm font-medium hover:underline">
+              {inst.name}
+            </button>
+          )}
+          {inst.is_ad_hoc && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">ONE-OFF</span>}
+          {inst.monthly_expense_id === null && !inst.is_ad_hoc && (
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">ORPHANED</span>
+          )}
+          <StatusBadge status={inst.status} />
+        </div>
+        {inst.transaction_id && inst.transaction_amount != null && (
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            Paid {money(inst.transaction_amount, inst.currency)} on {inst.transaction_date}
+            <button onClick={() => mUnlink.mutate({ data: { id: inst.id } })} className="ml-2 text-destructive hover:underline">unlink</button>
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <div className="text-right">
+          <div className="text-[10px] uppercase text-muted-foreground">This month</div>
+          <input
+            type="number"
+            step="0.01"
+            defaultValue={inst.planned_amount}
+            key={inst.planned_amount}
+            onBlur={(e) => {
+              const val = Number(e.target.value);
+              if (val !== inst.planned_amount) mUpdate.mutate({ data: { id: inst.id, planned_amount: val } });
+            }}
+            className="w-24 rounded-md border border-input bg-background px-2 py-1 text-right text-sm tabular-nums"
+            title="Override the planned amount for this month only"
+          />
+        </div>
+        {inst.status !== "paid" && (
+          inst.status === "paused" ? (
+            <Button size="sm" variant="outline" onClick={() => mStatus.mutate({ data: { id: inst.id, status: "pending" } })}>Resume</Button>
+          ) : (
+            <Button size="sm" variant="ghost" onClick={() => mStatus.mutate({ data: { id: inst.id, status: "paused" } })}>Pause</Button>
+          )
+        )}
+        {inst.is_ad_hoc && (
+          <Button size="sm" variant="danger" onClick={() => confirm(`Remove "${inst.name}"?`) && mDelete.mutate({ data: { id: inst.id } })}>×</Button>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function AdHocForm({ month, expenseCats }: { month: string; expenseCats: { id: string; name: string }[] }) {
+  const invalidate = useInvalidateBudget(month);
+  const create = useServerFn(createAdHocInstance);
+  const mCreate = useMutation({
+    mutationFn: create,
+    onSuccess: () => { toast.success("Added"); invalidate(); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <Card className="border-dashed">
+      <div className="mb-2 text-xs font-medium uppercase text-muted-foreground">Add one-off item ({month} only)</div>
+      <form
+        className="flex flex-wrap items-end gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const fd = new FormData(e.currentTarget);
+          const name = String(fd.get("name") || "").trim();
+          const category_id = String(fd.get("category_id") || "") || null;
+          const planned_amount = Number(fd.get("planned_amount") || 0);
+          if (!name) return;
+          mCreate.mutate({ data: { month, name, category_id, planned_amount, currency: "USD" } });
+          (e.currentTarget as HTMLFormElement).reset();
+        }}
+      >
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="font-medium">Name</span>
+          <TextInput name="name" placeholder="e.g. Car repair" required className="w-56" />
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="font-medium">Category</span>
+          <Select name="category_id" defaultValue="" className="w-44">
+            <option value="">— none —</option>
+            {expenseCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="font-medium">Amount</span>
+          <TextInput type="number" step="0.01" name="planned_amount" defaultValue="0" className="w-28" />
+        </label>
+        <Button type="submit" disabled={mCreate.isPending}>Add one-off</Button>
+      </form>
     </Card>
   );
 }
