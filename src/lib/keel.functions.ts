@@ -636,6 +636,22 @@ export const updateRecurringIncome = createServerFn({ method: "POST" })
           start_date = ${data.start_date ?? null},
           end_date = ${data.end_date ?? null}
         WHERE id = ${data.id}`;
+      // Purge stale, unpaid instances that fall outside the new start/end window
+      // so previously-materialized months don't show ghost rows.
+      if (data.start_date) {
+        await sql`DELETE FROM income_instances
+          WHERE recurring_income_id = ${data.id}
+            AND expected_date < ${data.start_date}
+            AND transaction_id IS NULL
+            AND status = 'expected'`;
+      }
+      if (data.end_date) {
+        await sql`DELETE FROM income_instances
+          WHERE recurring_income_id = ${data.id}
+            AND expected_date > ${data.end_date}
+            AND transaction_id IS NULL
+            AND status = 'expected'`;
+      }
       return { ok: true };
     } catch (err) {
       throw new Error(`Failed to update income source: ${(err as Error).message}`);
