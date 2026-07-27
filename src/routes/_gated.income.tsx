@@ -352,7 +352,7 @@ function IncomePage() {
           <EmptyState>No income projected for {month}. Add a source above.</EmptyState>
         ) : (
           <Table head={<><Th>Date</Th><Th>Source</Th><Th className="text-right">Expected</Th><Th>Status</Th><Th className="text-right">Received</Th><Th></Th></>}>
-          <Table head={<><Th>Date</Th><Th>Source</Th><Th className="text-right">Expected</Th><Th>Status</Th><Th className="text-right">Received</Th><Th></Th></>}>
+
             {monthData.instances.map((i) => (
               <IncomeInstanceRow
                 key={i.id}
