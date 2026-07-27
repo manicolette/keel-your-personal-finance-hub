@@ -14,12 +14,14 @@ import {
   listCategories,
   listRecurringIncome,
   listTransactions,
+  receiveIncomeDirect,
   unlinkIncomeInstance,
   updateIncomeInstance,
   updateRecurringIncome,
   type RecurringIncome,
 } from "@/lib/keel.functions";
 import { Button, Card, EmptyState, Field, PageHeader, Select, Table, Td, TextInput, Textarea, Th, money } from "@/components/keel-ui";
+
 
 const incQuery = queryOptions({ queryKey: ["recurring_income"], queryFn: () => listRecurringIncome() });
 const acctQuery = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
