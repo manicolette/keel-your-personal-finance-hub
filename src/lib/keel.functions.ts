@@ -919,6 +919,105 @@ export const unlinkIncomeInstance = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+// Direct entry: mark an income instance received by creating (or updating in
+// place) a real income Transaction against a chosen account. This is the only
+// path that moves account balances — a status flag alone would not.
+export const receiveIncomeDirect = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      instance_id: z.string().uuid(),
+      account_id: z.string().uuid(),
+      amount: z.coerce.number().positive("Amount must be greater than 0"),
+      on_date: z.string().min(10).optional(),
+      notes: z.string().max(500).nullable().optional(),
+    }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    const instRows = (await sql`
+      SELECT ii.id, ii.recurring_income_id, ii.expected_date, ii.currency, ii.transaction_id,
+             ri.category_id AS src_category_id
+      FROM income_instances ii
+      LEFT JOIN recurring_income ri ON ri.id = ii.recurring_income_id
+      WHERE ii.id = ${data.instance_id}`) as any[];
+    if (instRows.length === 0) throw new Error("Income instance not found");
+    const inst = instRows[0];
+    const onDate = data.on_date ?? d(inst.expected_date);
+    const notes = data.notes ?? null;
+
+    let txId: string | null = inst.transaction_id ?? null;
+    if (txId) {
+      await sql`
+        UPDATE transactions
+        SET on_date = ${onDate}, account_id = ${data.account_id},
+            amount = ${data.amount}, currency = ${inst.currency},
+            notes = ${notes}
+        WHERE id = ${txId}`;
+    } else {
+      const rows = (await sql`
+        INSERT INTO transactions (on_date, account_id, category_id, kind, amount, currency, notes)
+        VALUES (${onDate}, ${data.account_id}, ${inst.src_category_id ?? null}, 'income',
+                ${data.amount}, ${inst.currency}, ${notes})
+        RETURNING id`) as any[];
+      txId = rows[0].id as string;
+    }
+    await sql`
+      UPDATE income_instances
+      SET transaction_id = ${txId}, status = 'received', received_amount = ${data.amount}
+      WHERE id = ${data.instance_id}`;
+    return { ok: true, transaction_id: txId };
+  });
+
+// Direct entry: mark a monthly-expense instance paid by creating (or updating
+// in place) a real expense Transaction against a chosen account.
+export const payExpenseDirect = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      instance_id: z.string().uuid(),
+      account_id: z.string().uuid(),
+      amount: z.coerce.number().positive("Amount must be greater than 0"),
+      on_date: z.string().min(10).optional(),
+      notes: z.string().max(500).nullable().optional(),
+    }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    const instRows = (await sql`
+      SELECT id, month, category_id, currency, transaction_id
+      FROM monthly_expense_instances WHERE id = ${data.instance_id}`) as any[];
+    if (instRows.length === 0) throw new Error("Expense instance not found");
+    const inst = instRows[0];
+    const onDate = data.on_date ?? d(inst.month);
+    const notes = data.notes ?? null;
+
+    let txId: string | null = inst.transaction_id ?? null;
+    if (txId) {
+      await sql`
+        UPDATE transactions
+        SET on_date = ${onDate}, account_id = ${data.account_id},
+            category_id = ${inst.category_id ?? null},
+            amount = ${data.amount}, currency = ${inst.currency},
+            notes = ${notes}
+        WHERE id = ${txId}`;
+    } else {
+      const rows = (await sql`
+        INSERT INTO transactions (on_date, account_id, category_id, kind, amount, currency, notes)
+        VALUES (${onDate}, ${data.account_id}, ${inst.category_id ?? null}, 'expense',
+                ${data.amount}, ${inst.currency}, ${notes})
+        RETURNING id`) as any[];
+      txId = rows[0].id as string;
+    }
+    await sql`
+      UPDATE monthly_expense_instances
+      SET transaction_id = ${txId}, status = 'paid'
+      WHERE id = ${data.instance_id}`;
+    return { ok: true, transaction_id: txId };
+  });
+
+
+
 
 // -------------------------- Debts --------------------------
 const debtInput = z.object({
