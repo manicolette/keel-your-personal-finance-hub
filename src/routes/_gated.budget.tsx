@@ -49,7 +49,9 @@ export const Route = createFileRoute("/_gated/budget")({
     await Promise.all([
       context.queryClient.ensureQueryData(budgetQueryOptions(deps.month)),
       context.queryClient.ensureQueryData(catsQueryOptions),
+      context.queryClient.ensureQueryData(acctsQueryOptions),
     ]);
+
   },
   component: BudgetPage,
   errorComponent: ({ error }) => <div role="alert" className="text-sm text-destructive">{error.message}</div>,
