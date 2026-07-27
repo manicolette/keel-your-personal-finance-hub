@@ -212,84 +212,138 @@ function StatusBadge({ status }: { status: MonthlyExpenseInstance["status"] }) {
   return <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ${map[status]}`}>{status}</span>;
 }
 
-function InstanceRow({ inst, month }: { inst: MonthlyExpenseInstance; month: string }) {
+function InstanceRow({ inst, month, accounts }: { inst: MonthlyExpenseInstance; month: string; accounts: { id: string; name: string }[] }) {
   const invalidate = useInvalidateBudget(month);
   const update = useServerFn(updateInstance);
   const status = useServerFn(setInstanceStatus);
   const unlink = useServerFn(unlinkInstance);
   const remove = useServerFn(deleteInstance);
+  const payFn = useServerFn(payExpenseDirect);
   const mUpdate = useMutation({ mutationFn: update, onSuccess: invalidate, onError: (e: Error) => toast.error(e.message) });
   const mStatus = useMutation({ mutationFn: status, onSuccess: invalidate, onError: (e: Error) => toast.error(e.message) });
   const mUnlink = useMutation({ mutationFn: unlink, onSuccess: () => { toast.success("Unlinked"); invalidate(); }, onError: (e: Error) => toast.error(e.message) });
   const mDelete = useMutation({ mutationFn: remove, onSuccess: () => { toast.success("Removed"); invalidate(); }, onError: (e: Error) => toast.error(e.message) });
 
   const [editingName, setEditingName] = useState(false);
+  const [payOpen, setPayOpen] = useState(false);
+  const [payAmt, setPayAmt] = useState<string>(String(inst.transaction_amount ?? inst.planned_amount ?? 0));
+  const [payAcct, setPayAcct] = useState<string>(accounts[0]?.id ?? "");
+  const [payDate, setPayDate] = useState<string>(inst.transaction_date ?? new Date().toISOString().slice(0, 10));
+  const [payNote, setPayNote] = useState("");
+  const [payPending, setPayPending] = useState(false);
+
+  const submitPay = () => {
+    if (!payAcct) { toast.error("Pick which account paid it"); return; }
+    if (!(Number(payAmt) > 0)) { toast.error("Enter an amount greater than 0"); return; }
+    setPayPending(true);
+    payFn({ data: { instance_id: inst.id, account_id: payAcct, amount: Number(payAmt), on_date: payDate, notes: payNote || null } })
+      .then(() => { toast.success(inst.status === "paid" ? "Updated" : "Marked paid"); setPayOpen(false); invalidate(); })
+      .catch((e: Error) => toast.error(e.message))
+      .finally(() => setPayPending(false));
+  };
 
   return (
-    <li className="flex flex-wrap items-center gap-2 px-3 py-2">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          {editingName ? (
-            <input
-              autoFocus
-              defaultValue={inst.name}
-              onBlur={(e) => {
-                const name = e.target.value.trim();
-                setEditingName(false);
-                if (name && name !== inst.name) mUpdate.mutate({ data: { id: inst.id, name } });
-              }}
-              onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-              className="rounded border border-input bg-background px-1.5 py-0.5 text-sm"
-            />
-          ) : (
-            <button onClick={() => setEditingName(true)} className="text-sm font-medium hover:underline">
-              {inst.name}
-            </button>
-          )}
-          {inst.is_ad_hoc && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">ONE-OFF</span>}
-          {inst.monthly_expense_id === null && !inst.is_ad_hoc && (
-            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">ORPHANED</span>
-          )}
-          <StatusBadge status={inst.status} />
-        </div>
-        {inst.transaction_id && inst.transaction_amount != null && (
-          <div className="mt-0.5 text-xs text-muted-foreground">
-            Paid {money(inst.transaction_amount, inst.currency)} on {inst.transaction_date}
-            <button onClick={() => mUnlink.mutate({ data: { id: inst.id } })} className="ml-2 text-destructive hover:underline">unlink</button>
+    <li className="flex flex-col gap-1 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            {editingName ? (
+              <input
+                autoFocus
+                defaultValue={inst.name}
+                onBlur={(e) => {
+                  const name = e.target.value.trim();
+                  setEditingName(false);
+                  if (name && name !== inst.name) mUpdate.mutate({ data: { id: inst.id, name } });
+                }}
+                onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+                className="rounded border border-input bg-background px-1.5 py-0.5 text-sm"
+              />
+            ) : (
+              <button onClick={() => setEditingName(true)} className="text-sm font-medium hover:underline">
+                {inst.name}
+              </button>
+            )}
+            {inst.is_ad_hoc && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">ONE-OFF</span>}
+            {inst.monthly_expense_id === null && !inst.is_ad_hoc && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">ORPHANED</span>
+            )}
+            <StatusBadge status={inst.status} />
           </div>
-        )}
+          {inst.transaction_id && inst.transaction_amount != null && (
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              Paid {money(inst.transaction_amount, inst.currency)} on {inst.transaction_date}
+              <button onClick={() => mUnlink.mutate({ data: { id: inst.id } })} className="ml-2 text-destructive hover:underline">unlink</button>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="text-right">
+            <div className="text-[10px] uppercase text-muted-foreground">This month</div>
+            <input
+              type="number"
+              step="0.01"
+              defaultValue={inst.planned_amount}
+              key={inst.planned_amount}
+              onBlur={(e) => {
+                const val = Number(e.target.value);
+                if (val !== inst.planned_amount) mUpdate.mutate({ data: { id: inst.id, planned_amount: val } });
+              }}
+              className="w-24 rounded-md border border-input bg-background px-2 py-1 text-right text-sm tabular-nums"
+              title="Override the planned amount for this month only"
+            />
+          </div>
+          {inst.status === "paid" ? (
+            <Button size="sm" variant="outline" onClick={() => setPayOpen((v) => !v)}>{payOpen ? "Close" : "Edit payment"}</Button>
+          ) : (
+            inst.status === "paused" ? (
+              <>
+                <Button size="sm" variant="outline" onClick={() => mStatus.mutate({ data: { id: inst.id, status: "pending" } })}>Resume</Button>
+              </>
+            ) : (
+              <>
+                <Button size="sm" onClick={() => setPayOpen((v) => !v)}>{payOpen ? "Close" : "Mark paid"}</Button>
+                <Button size="sm" variant="ghost" onClick={() => mStatus.mutate({ data: { id: inst.id, status: "paused" } })}>Pause</Button>
+              </>
+            )
+          )}
+          {inst.is_ad_hoc && (
+            <Button size="sm" variant="danger" onClick={() => confirm(`Remove "${inst.name}"?`) && mDelete.mutate({ data: { id: inst.id } })}>×</Button>
+          )}
+        </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        <div className="text-right">
-          <div className="text-[10px] uppercase text-muted-foreground">This month</div>
-          <input
-            type="number"
-            step="0.01"
-            defaultValue={inst.planned_amount}
-            key={inst.planned_amount}
-            onBlur={(e) => {
-              const val = Number(e.target.value);
-              if (val !== inst.planned_amount) mUpdate.mutate({ data: { id: inst.id, planned_amount: val } });
-            }}
-            className="w-24 rounded-md border border-input bg-background px-2 py-1 text-right text-sm tabular-nums"
-            title="Override the planned amount for this month only"
-          />
+      {payOpen && (
+        <div className="mt-2 flex flex-wrap items-end gap-2 rounded-md border border-dashed border-border bg-muted/30 px-2 py-2">
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">Amount paid</span>
+            <TextInput type="number" step="0.01" value={payAmt} onChange={(e) => setPayAmt(e.target.value)} className="w-28" />
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">From account</span>
+            <Select value={payAcct} onChange={(e) => setPayAcct(e.target.value)} className="w-44">
+              <option value="">— pick account —</option>
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </Select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="font-medium">Date</span>
+            <TextInput type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} className="w-40" />
+          </label>
+          <label className="flex flex-col gap-1 text-xs flex-1 min-w-[180px]">
+            <span className="font-medium">Note (optional)</span>
+            <TextInput value={payNote} onChange={(e) => setPayNote(e.target.value)} />
+          </label>
+          <Button size="sm" onClick={submitPay} disabled={payPending}>
+            {inst.status === "paid" ? "Save changes" : "Mark paid"}
+          </Button>
         </div>
-        {inst.status !== "paid" && (
-          inst.status === "paused" ? (
-            <Button size="sm" variant="outline" onClick={() => mStatus.mutate({ data: { id: inst.id, status: "pending" } })}>Resume</Button>
-          ) : (
-            <Button size="sm" variant="ghost" onClick={() => mStatus.mutate({ data: { id: inst.id, status: "paused" } })}>Pause</Button>
-          )
-        )}
-        {inst.is_ad_hoc && (
-          <Button size="sm" variant="danger" onClick={() => confirm(`Remove "${inst.name}"?`) && mDelete.mutate({ data: { id: inst.id } })}>×</Button>
-        )}
-      </div>
+      )}
     </li>
   );
 }
+
 
 function AdHocForm({ month, expenseCats }: { month: string; expenseCats: { id: string; name: string }[] }) {
   const invalidate = useInvalidateBudget(month);
