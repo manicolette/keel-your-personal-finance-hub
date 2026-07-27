@@ -63,7 +63,10 @@ function BudgetPage() {
   const go = (month: string) => navigate({ to: "/budget", search: { month } });
   const { data } = useSuspenseQuery(budgetQueryOptions(month));
   const { data: cats } = useSuspenseQuery(catsQueryOptions);
+  const { data: accounts } = useSuspenseQuery(acctsQueryOptions);
   const expenseCats = cats.filter((c) => c.kind === "expense" && !c.archived);
+  const activeAccounts = accounts.filter((a) => !a.archived);
+
 
   const plannedTotal = data.groups.reduce((s, g) => s + g.planned, 0);
   const actualTotal = data.groups.reduce((s, g) => s + g.actual, 0);
