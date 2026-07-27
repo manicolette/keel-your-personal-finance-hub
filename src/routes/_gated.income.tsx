@@ -489,7 +489,8 @@ function IncomeInstanceRow({
             <div className="px-1 pb-2 text-[11px] text-muted-foreground">
               This creates (or updates) a real income Transaction on the chosen account, so its balance moves.
             </div>
-          </Td>
+          </td>
+
         </tr>
       )}
     </>
