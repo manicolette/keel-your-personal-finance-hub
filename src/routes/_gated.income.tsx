@@ -461,7 +461,7 @@ function IncomeInstanceRow({
       </tr>
       {entryOpen && (
         <tr className="bg-muted/30">
-          <Td colSpan={6}>
+          <td colSpan={6} className="px-3">
             <div className="flex flex-wrap items-end gap-2 px-1 py-2">
               <label className="flex flex-col gap-1 text-xs">
                 <span className="font-medium">Amount received</span>
