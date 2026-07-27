@@ -373,7 +373,7 @@ function IncomePage() {
   );
 }
 
-type IncomeInst = ReturnType<typeof useSuspenseQuery<ReturnType<typeof getIncome>>>["data"]["instances"][number];
+type IncomeInst = Awaited<ReturnType<typeof getIncome>>["instances"][number];
 
 function IncomeInstanceRow({
   inst, accounts, monthTxOptions, onLink, onUnlink, onSkip, onUnskip, onInvalidate,
