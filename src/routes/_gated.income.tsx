@@ -89,7 +89,10 @@ function IncomePage() {
     qc.invalidateQueries({ queryKey: ["recurring_income"] });
     qc.invalidateQueries({ queryKey: ["income_month"] });
     qc.invalidateQueries({ queryKey: ["dashboard"] });
+    qc.invalidateQueries({ queryKey: ["transactions"] });
+    qc.invalidateQueries({ queryKey: ["accounts"] });
   };
+
 
   const [editing, setEditing] = useState<RecurringIncome | null>(null);
   const [showForm, setShowForm] = useState(false);
