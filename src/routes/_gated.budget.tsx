@@ -165,7 +165,7 @@ function useInvalidateBudget(month: string) {
   };
 }
 
-function GroupCard({ group, month }: { group: BudgetGroup; month: string }) {
+function GroupCard({ group, month, accounts }: { group: BudgetGroup; month: string; accounts: { id: string; name: string }[] }) {
   const pct = group.planned > 0 ? Math.round((group.actual / group.planned) * 100) : 0;
   const over = group.actual > group.planned && group.planned > 0;
 
@@ -193,13 +193,14 @@ function GroupCard({ group, month }: { group: BudgetGroup; month: string }) {
       {group.instances.length > 0 && (
         <ul className="mt-3 divide-y divide-border rounded-md border border-border bg-background">
           {group.instances.map((inst) => (
-            <InstanceRow key={inst.id} inst={inst} month={month} />
+            <InstanceRow key={inst.id} inst={inst} month={month} accounts={accounts} />
           ))}
         </ul>
       )}
     </Card>
   );
 }
+
 
 function StatusBadge({ status }: { status: MonthlyExpenseInstance["status"] }) {
   const map: Record<string, string> = {
