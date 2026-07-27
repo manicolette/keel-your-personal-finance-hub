@@ -28,6 +28,8 @@ const budgetQueryOptions = (month: string) =>
   });
 
 const catsQueryOptions = queryOptions({ queryKey: ["categories"], queryFn: () => listCategories() });
+const acctsQueryOptions = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
+
 
 const currentMonth = () => new Date().toISOString().slice(0, 7);
 const shiftMonth = (m: string, delta: number) => {
