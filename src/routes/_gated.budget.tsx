@@ -146,9 +146,10 @@ function BudgetPage() {
       ) : (
         <div className="space-y-4">
           {data.groups.map((g) => (
-            <GroupCard key={g.category_id ?? "null"} group={g} month={month} />
+            <GroupCard key={g.category_id ?? "null"} group={g} month={month} accounts={activeAccounts} />
           ))}
         </div>
+
       )}
 
       <AdHocForm month={month} expenseCats={expenseCats} />
