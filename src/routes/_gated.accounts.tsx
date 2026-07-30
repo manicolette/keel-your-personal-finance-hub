@@ -125,14 +125,15 @@ function AccountsPage() {
       ) : (
         <Table head={<>
           <Th>Name</Th><Th>Kind</Th><Th>Currency</Th>
-          <Th className="text-right">Opening</Th><Th></Th>
+          <Th className="text-right">Opening</Th><Th className="text-right">Current</Th><Th></Th>
         </>}>
           {accounts.map((a) => (
             <tr key={a.id} className={a.archived ? "opacity-60" : ""}>
               <Td className="font-medium">{a.name}</Td>
               <Td className="capitalize">{a.kind}</Td>
               <Td>{a.currency}</Td>
-              <Td className="text-right tabular-nums">{money(a.opening_balance, a.currency)}</Td>
+              <Td className="text-right tabular-nums text-muted-foreground">{money(a.opening_balance, a.currency)}</Td>
+              <Td className="text-right tabular-nums font-semibold">{money(a.current_balance, a.currency)}</Td>
               <Td className="text-right">
                 <div className="flex justify-end gap-1">
                   <Button size="sm" variant="outline" onClick={() => { setEditing(a); setShowForm(false); }}>Edit</Button>

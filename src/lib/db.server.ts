@@ -268,6 +268,13 @@ CREATE TABLE IF NOT EXISTS income_instances (
 CREATE UNIQUE INDEX IF NOT EXISTS ii_def_date_uidx ON income_instances(recurring_income_id, expected_date) WHERE recurring_income_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ii_date_idx ON income_instances(expected_date);
 CREATE INDEX IF NOT EXISTS ii_txn_idx ON income_instances(transaction_id);
+
+-- Additive: Goals tied to real money (linked account + tagged transactions).
+ALTER TABLE goals ADD COLUMN IF NOT EXISTS account_id uuid REFERENCES accounts(id) ON DELETE SET NULL;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS goal_id uuid REFERENCES goals(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS tx_goal_idx ON transactions(goal_id);
+CREATE INDEX IF NOT EXISTS tx_account_idx ON transactions(account_id);
+CREATE INDEX IF NOT EXISTS tx_transfer_account_idx ON transactions(transfer_account_id);
 `;
 
 export function ensureSchema(): Promise<void> {
