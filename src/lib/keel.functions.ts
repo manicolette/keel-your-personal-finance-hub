@@ -10,6 +10,7 @@ export type Account = {
   kind: "bank" | "cash" | "credit" | "investment" | "other";
   currency: string;
   opening_balance: number;
+  current_balance: number;
   archived: boolean;
   sort_order: number;
 };
@@ -32,6 +33,7 @@ export type Transaction = {
   notes: string | null;
   transfer_account_id: string | null;
   receipt_url: string | null;
+  goal_id: string | null;
 };
 export type Subscription = {
   id: string;
@@ -117,8 +119,12 @@ export type Goal = {
   name: string;
   target_amount: number;
   saved_amount: number;
+  contributed_amount: number;
+  progress_amount: number;
   target_date: string | null;
   notes: string | null;
+  account_id: string | null;
+  account_name: string | null;
 };
 export type NetWorthSnapshot = {
   id: string;
@@ -243,11 +249,29 @@ export const updateSettings = createServerFn({ method: "POST" })
   });
 
 // -------------------------- Accounts --------------------------
+// Live per-account balance: opening + income - expense - transfers out + transfers in.
+// Always computed from the transactions table, never stored, so it cannot drift.
 export const listAccounts = createServerFn({ method: "GET" }).handler(async () => {
   await requireUnlocked();
   const sql = await db();
-  const rows = (await sql`SELECT id, name, kind, currency, opening_balance, archived, sort_order FROM accounts ORDER BY sort_order, name`) as any[];
-  return rows.map((r) => ({ ...r, opening_balance: n(r.opening_balance) })) as Account[];
+  const rows = (await sql`
+    SELECT a.id, a.name, a.kind, a.currency, a.opening_balance, a.archived, a.sort_order,
+      a.opening_balance
+      + COALESCE((
+          SELECT SUM(CASE WHEN t.kind = 'income' THEN t.amount
+                          WHEN t.kind IN ('expense','transfer') THEN -t.amount
+                          ELSE 0 END)
+          FROM transactions t WHERE t.account_id = a.id), 0)
+      + COALESCE((
+          SELECT SUM(t.amount) FROM transactions t
+          WHERE t.kind = 'transfer' AND t.transfer_account_id = a.id), 0)
+      AS current_balance
+    FROM accounts a ORDER BY a.sort_order, a.name`) as any[];
+  return rows.map((r) => ({
+    ...r,
+    opening_balance: n(r.opening_balance),
+    current_balance: n(r.current_balance),
+  })) as Account[];
 });
 
 const accountInput = z.object({
@@ -347,7 +371,7 @@ export const listTransactions = createServerFn({ method: "GET" }).handler(async 
   await requireUnlocked();
   const sql = await db();
   const rows = (await sql`
-    SELECT id, on_date, account_id, category_id, kind, amount, currency, notes, transfer_account_id, receipt_url
+    SELECT id, on_date, account_id, category_id, kind, amount, currency, notes, transfer_account_id, receipt_url, goal_id
     FROM transactions ORDER BY on_date DESC, created_at DESC LIMIT 1000`) as any[];
   return rows.map((r) => ({ ...r, amount: n(r.amount), on_date: d(r.on_date), notes: s(r.notes), receipt_url: s(r.receipt_url) })) as Transaction[];
 });
@@ -362,6 +386,7 @@ const txInput = z.object({
   notes: z.string().max(500).nullable().optional(),
   transfer_account_id: z.string().uuid().nullable().optional(),
   receipt_url: z.string().url().nullable().optional(),
+  goal_id: z.string().uuid().nullable().optional(),
 });
 
 export const createTransaction = createServerFn({ method: "POST" })
@@ -369,9 +394,12 @@ export const createTransaction = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
+    if (data.kind === "transfer" && data.transfer_account_id === data.account_id) {
+      throw new Error("A transfer must go between two different accounts");
+    }
     const rows = (await sql`
-      INSERT INTO transactions (on_date, account_id, category_id, kind, amount, currency, notes, transfer_account_id, receipt_url)
-      VALUES (${data.on_date}, ${data.account_id}, ${data.category_id ?? null}, ${data.kind}, ${data.amount}, ${data.currency}, ${data.notes ?? null}, ${data.transfer_account_id ?? null}, ${data.receipt_url ?? null})
+      INSERT INTO transactions (on_date, account_id, category_id, kind, amount, currency, notes, transfer_account_id, receipt_url, goal_id)
+      VALUES (${data.on_date}, ${data.account_id}, ${data.category_id ?? null}, ${data.kind}, ${data.amount}, ${data.currency}, ${data.notes ?? null}, ${data.transfer_account_id ?? null}, ${data.receipt_url ?? null}, ${data.goal_id ?? null})
       RETURNING id`) as any[];
     return { id: rows[0].id as string };
   });
@@ -381,12 +409,16 @@ export const updateTransaction = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
+    if (data.kind === "transfer" && data.transfer_account_id === data.account_id) {
+      throw new Error("A transfer must go between two different accounts");
+    }
     await sql`
       UPDATE transactions SET on_date = ${data.on_date}, account_id = ${data.account_id},
         category_id = ${data.category_id ?? null}, kind = ${data.kind}, amount = ${data.amount},
         currency = ${data.currency}, notes = ${data.notes ?? null},
         transfer_account_id = ${data.transfer_account_id ?? null},
-        receipt_url = ${data.receipt_url ?? null}
+        receipt_url = ${data.receipt_url ?? null},
+        goal_id = ${data.goal_id ?? null}
       WHERE id = ${data.id}`;
     return { ok: true };
   });
@@ -1191,26 +1223,82 @@ export const deleteDebtPayment = createServerFn({ method: "POST" })
   });
 
 // -------------------------- Goals --------------------------
+// Progress is real money: a manual starting baseline (saved_amount) plus the
+// sum of every transaction tagged to the goal. Contributions are computed live
+// from the transactions table, never stored.
 const goalInput = z.object({
   name: z.string().min(1).max(80),
   target_amount: z.coerce.number().default(0),
   saved_amount: z.coerce.number().default(0),
   target_date: z.string().nullable().optional(),
   notes: z.string().max(500).nullable().optional(),
+  account_id: z.string().uuid().nullable().optional(),
 });
 
 export const listGoals = createServerFn({ method: "GET" }).handler(async () => {
   await requireUnlocked();
   const sql = await db();
-  const rows = (await sql`SELECT id, name, target_amount, saved_amount, target_date, notes FROM goals ORDER BY name`) as any[];
+  const rows = (await sql`
+    SELECT g.id, g.name, g.target_amount, g.saved_amount, g.target_date, g.notes, g.account_id,
+      a.name AS account_name,
+      COALESCE((
+        SELECT SUM(CASE WHEN t.kind = 'expense' THEN -t.amount ELSE t.amount END)
+        FROM transactions t WHERE t.goal_id = g.id), 0) AS contributed_amount
+    FROM goals g
+    LEFT JOIN accounts a ON a.id = g.account_id
+    ORDER BY g.name`) as any[];
   return rows.map((r) => ({
     ...r,
     target_amount: n(r.target_amount),
     saved_amount: n(r.saved_amount),
+    contributed_amount: n(r.contributed_amount),
+    progress_amount: n(r.saved_amount) + n(r.contributed_amount),
     target_date: r.target_date ? d(r.target_date) : null,
     notes: s(r.notes),
+    account_name: s(r.account_name),
   })) as Goal[];
 });
+
+// Transactions tagged to each goal, so they can be reviewed / untagged.
+export const listGoalContributions = createServerFn({ method: "GET" }).handler(async () => {
+  await requireUnlocked();
+  const sql = await db();
+  const rows = (await sql`
+    SELECT t.id, t.goal_id, t.on_date, t.kind, t.amount, t.currency, t.notes,
+           a.name AS account_name
+    FROM transactions t
+    LEFT JOIN accounts a ON a.id = t.account_id
+    WHERE t.goal_id IS NOT NULL
+    ORDER BY t.on_date DESC`) as any[];
+  return rows.map((r) => ({
+    id: r.id as string,
+    goal_id: r.goal_id as string,
+    on_date: d(r.on_date),
+    kind: r.kind as Transaction["kind"],
+    amount: n(r.amount),
+    currency: String(r.currency),
+    notes: s(r.notes),
+    account_name: s(r.account_name),
+  }));
+});
+
+// Tag / untag a transaction as contributing to a goal.
+export const setTransactionGoal = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      transaction_id: z.string().uuid(),
+      goal_id: z.string().uuid().nullable(),
+    }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    const rows = (await sql`
+      UPDATE transactions SET goal_id = ${data.goal_id}
+      WHERE id = ${data.transaction_id} RETURNING id`) as any[];
+    if (rows.length === 0) throw new Error("Transaction not found");
+    return { ok: true };
+  });
 
 export const createGoal = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => goalInput.parse(data))
@@ -1218,8 +1306,8 @@ export const createGoal = createServerFn({ method: "POST" })
     await requireUnlocked();
     const sql = await db();
     const rows = (await sql`
-      INSERT INTO goals (name, target_amount, saved_amount, target_date, notes)
-      VALUES (${data.name}, ${data.target_amount}, ${data.saved_amount}, ${data.target_date || null}, ${data.notes ?? null})
+      INSERT INTO goals (name, target_amount, saved_amount, target_date, notes, account_id)
+      VALUES (${data.name}, ${data.target_amount}, ${data.saved_amount}, ${data.target_date || null}, ${data.notes ?? null}, ${data.account_id ?? null})
       RETURNING id`) as any[];
     return { id: rows[0].id as string };
   });
@@ -1231,7 +1319,8 @@ export const updateGoal = createServerFn({ method: "POST" })
     const sql = await db();
     await sql`
       UPDATE goals SET name = ${data.name}, target_amount = ${data.target_amount},
-        saved_amount = ${data.saved_amount}, target_date = ${data.target_date || null}, notes = ${data.notes ?? null}
+        saved_amount = ${data.saved_amount}, target_date = ${data.target_date || null},
+        notes = ${data.notes ?? null}, account_id = ${data.account_id ?? null}
       WHERE id = ${data.id}`;
     return { ok: true };
   });

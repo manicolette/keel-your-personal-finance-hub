@@ -11,6 +11,7 @@ import {
   linkTransactionToInstance,
   listAccounts,
   listCategories,
+  listGoals,
   listMonthInstances,
   listTransactions,
   unlinkInstance,
@@ -22,6 +23,7 @@ import { Button, Card, EmptyState, Field, PageHeader, Select, Table, Td, TextInp
 const txQuery = queryOptions({ queryKey: ["transactions"], queryFn: () => listTransactions() });
 const acctQuery = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
 const catQuery = queryOptions({ queryKey: ["categories"], queryFn: () => listCategories() });
+const goalsQuery = queryOptions({ queryKey: ["goals"], queryFn: () => listGoals() });
 
 const searchSchema = z.object({
   from: fallback(z.string(), "").default(""),
@@ -38,6 +40,7 @@ export const Route = createFileRoute("/_gated/transactions")({
       context.queryClient.ensureQueryData(txQuery),
       context.queryClient.ensureQueryData(acctQuery),
       context.queryClient.ensureQueryData(catQuery),
+      context.queryClient.ensureQueryData(goalsQuery),
     ]);
   },
   component: TransactionsPage,
@@ -51,6 +54,7 @@ function TransactionsPage() {
   const { data: allTxs } = useSuspenseQuery(txQuery);
   const { data: accts } = useSuspenseQuery(acctQuery);
   const { data: cats } = useSuspenseQuery(catQuery);
+  const { data: goals } = useSuspenseQuery(goalsQuery);
   const { from, to, account, category, q } = Route.useSearch();
   const navigate = useNavigate();
   const setFilter = (patch: Partial<{ from: string; to: string; account: string; category: string; q: string }>) =>
@@ -82,6 +86,10 @@ function TransactionsPage() {
     qc.invalidateQueries({ queryKey: ["transactions"] });
     qc.invalidateQueries({ queryKey: ["dashboard"] });
     qc.invalidateQueries({ queryKey: ["budget"] });
+    qc.invalidateQueries({ queryKey: ["accounts"] });
+    qc.invalidateQueries({ queryKey: ["networth-live"] });
+    qc.invalidateQueries({ queryKey: ["goals"] });
+    qc.invalidateQueries({ queryKey: ["goal-contributions"] });
   };
 
   const formMonth = monthOf(formDate);
@@ -172,7 +180,7 @@ function TransactionsPage() {
 
   const initial: Partial<Transaction> = editing ?? {
     on_date: today(), account_id: accts[0]?.id, category_id: null, kind: "expense",
-    amount: 0, currency: accts[0]?.currency ?? "USD", notes: "", transfer_account_id: null, receipt_url: null,
+    amount: 0, currency: accts[0]?.currency ?? "USD", notes: "", transfer_account_id: null, receipt_url: null, goal_id: null,
   };
   const formOpen = showForm || !!editing;
 
@@ -276,6 +284,7 @@ function TransactionsPage() {
               notes: String(fd.get("notes") || "") || null,
               transfer_account_id: kind === "transfer" ? (String(fd.get("transfer_account_id") || "") || null) : null,
               receipt_url: receiptUrl,
+              goal_id: String(fd.get("goal_id") || "") || null,
             };
             if (editing) mUpdate.mutate({ data: { ...payload, id: editing.id } });
             else mCreate.mutate({ data: payload });
@@ -312,6 +321,12 @@ function TransactionsPage() {
               </Select>
             </Field>
             <Field label="Currency"><TextInput name="currency" defaultValue={initial.currency} /></Field>
+            <Field label="Contributes to Goal" hint="Tag this transaction so it counts toward a savings goal.">
+              <Select name="goal_id" defaultValue={initial.goal_id ?? ""}>
+                <option value="">— none —</option>
+                {goals.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </Select>
+            </Field>
             <div className="sm:col-span-2">
               <Field label={`Pays Monthly Expense (${formMonth})`} hint="Manually link this transaction to a planned monthly expense.">
                 <Select value={linkInstanceId} onChange={(e) => setLinkInstanceId(e.target.value)}>

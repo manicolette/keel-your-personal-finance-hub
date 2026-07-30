@@ -162,6 +162,9 @@ function useInvalidateBudget(month: string) {
   return () => {
     qc.invalidateQueries({ queryKey: ["budget", month] });
     qc.invalidateQueries({ queryKey: ["transactions"] });
+    qc.invalidateQueries({ queryKey: ["accounts"] });
+    qc.invalidateQueries({ queryKey: ["networth-live"] });
+    qc.invalidateQueries({ queryKey: ["dashboard"] });
   };
 }
 
