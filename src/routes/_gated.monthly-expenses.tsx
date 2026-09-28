@@ -24,6 +24,8 @@ import {
   TextInput,
   Th,
   money,
+  currentMonth,
+  OverrideConfirm,
 } from "@/components/keel-ui";
 
 const meQuery = queryOptions({ queryKey: ["monthly_expenses"], queryFn: () => listMonthlyExpenses() });
@@ -52,10 +54,12 @@ function MonthlyExpensesPage() {
   const remove = useServerFn(deleteMonthlyExpense);
   const [editing, setEditing] = useState<MonthlyExpense | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [pending, setPending] = useState<{ payload: any; count: number; months: string[] } | null>(null);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["monthly_expenses"] });
     qc.invalidateQueries({ queryKey: ["budget"] });
+    qc.invalidateQueries({ queryKey: ["dashboard"] });
   };
   const mCreate = useMutation({
     mutationFn: create,
@@ -64,9 +68,21 @@ function MonthlyExpensesPage() {
   });
   const mUpdate = useMutation({
     mutationFn: update,
-    onSuccess: () => { toast.success("Saved"); invalidate(); setEditing(null); },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => toast.error(e.message || "Couldn't save — nothing was changed."),
   });
+  const submitUpdate = async (payload: any, override_policy?: "overwrite" | "keep") => {
+    try {
+      const res = await mUpdate.mutateAsync({ data: { ...payload, from_month: currentMonth(), override_policy } });
+      if (res.needs_confirm) {
+        setPending({ payload, count: res.overridden_count, months: res.overridden_months });
+        return;
+      }
+      setPending(null);
+      toast.success(`Saved — applied to this month and ${Math.max(res.updated_months - 1, 0) > 0 ? "future months" : "all future months"}`);
+      await invalidate();
+      setEditing(null);
+    } catch { /* toast shown in onError; form stays open with your values */ }
+  };
   const mDelete = useMutation({
     mutationFn: remove,
     onSuccess: () => { toast.success("Deleted"); invalidate(); },
@@ -109,6 +125,17 @@ function MonthlyExpensesPage() {
         </Card>
       </div>
 
+      {pending && (
+        <OverrideConfirm
+          count={pending.count}
+          months={pending.months}
+          busy={mUpdate.isPending}
+          onOverwrite={() => submitUpdate(pending.payload, "overwrite")}
+          onKeep={() => submitUpdate(pending.payload, "keep")}
+          onCancel={() => setPending(null)}
+        />
+      )}
+
       {formOpen && (
         <Card>
           <form
@@ -127,7 +154,7 @@ function MonthlyExpensesPage() {
                 notes: String(fd.get("notes") || "") || null,
                 sort_order: Number(fd.get("sort_order") || 0),
               };
-              if (editing) mUpdate.mutate({ data: { ...payload, id: editing.id } });
+              if (editing) submitUpdate({ ...payload, id: editing.id });
               else mCreate.mutate({ data: payload });
             }}
           >
