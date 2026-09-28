@@ -13,12 +13,16 @@ import {
   listCategories,
   payExpenseDirect,
   setInstanceStatus,
+  setMonthLimit,
   unlinkInstance,
   updateInstance,
+  type Account,
   type BudgetGroup,
   type MonthlyExpenseInstance,
 } from "@/lib/keel.functions";
-import { Button, Card, EmptyState, PageHeader, Select, TextInput, money } from "@/components/keel-ui";
+import { Button, Card, CategoryIcon, EmptyState, PageHeader, Select, TextInput, money } from "@/components/keel-ui";
+
+type PayAccount = Pick<Account, "id" | "name">;
 
 
 const budgetQueryOptions = (month: string) =>
@@ -70,6 +74,19 @@ function BudgetPage() {
   const { data: accounts } = useSuspenseQuery(acctsQueryOptions);
   const expenseCats = cats.filter((c) => c.kind === "expense" && !c.archived);
   const activeAccounts = accounts.filter((a) => !a.archived);
+  const payingAccounts = activeAccounts.filter((a) => a.kind !== "credit");
+
+  // Does each account hold enough for the bills still due from it this month?
+  const dueByAccount = new Map<string, number>();
+  for (const g of data.groups) {
+    for (const i of g.instances) {
+      if (i.status === "pending" && i.account_id) dueByAccount.set(i.account_id, (dueByAccount.get(i.account_id) ?? 0) + i.planned_amount);
+    }
+  }
+  const coverage = accounts
+    .filter((a) => dueByAccount.has(a.id))
+    .map((a) => ({ account: a, due: dueByAccount.get(a.id)!, short: Math.max(0, dueByAccount.get(a.id)! - a.current_balance) }));
+  const showCoverage = month >= currentMonth() && coverage.length > 0;
 
 
   const plannedTotal = data.groups.reduce((s, g) => s + g.planned, 0);
@@ -81,7 +98,7 @@ function BudgetPage() {
     <div className="space-y-5">
       <PageHeader
         title="Budget"
-        subtitle="Everything you're expected to pay this month — and what's actually been paid."
+        subtitle="Bills and everyday spending limits for the month. Spending starts fresh each month."
         actions={
           <div className="flex items-center gap-2">
             <Link
@@ -135,6 +152,31 @@ function BudgetPage() {
         </Card>
       </div>
 
+      {showCoverage && (
+        <Card>
+          <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Bills still due, by account</div>
+          <ul className="divide-y divide-border">
+            {coverage.map(({ account, due, short }) => (
+              <li key={account.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm">
+                <span className="min-w-0 flex-1 font-medium">{account.name}</span>
+                <span className="tabular-nums text-muted-foreground">{money(due, account.currency)} due · {money(account.current_balance, account.currency)} in account</span>
+                {short > 0 ? (
+                  <span className="font-medium text-[color:var(--negative)]">{money(short, account.currency)} short</span>
+                ) : (
+                  <span className="font-medium text-[color:var(--positive)]">Covered</span>
+                )}
+              </li>
+            ))}
+          </ul>
+          {coverage.some((c) => c.short > 0) && (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Move money with a transfer on the{" "}
+              <Link to="/transactions" className="font-medium text-primary underline">Transactions</Link> page.
+            </div>
+          )}
+        </Card>
+      )}
+
       <div className="rounded-md border border-dashed border-border bg-muted/30 p-3 text-xs text-muted-foreground">
         Manage recurring items on the{" "}
         <Link to="/monthly-expenses" className="font-medium text-primary underline">Monthly Expenses</Link>{" "}
@@ -150,13 +192,13 @@ function BudgetPage() {
       ) : (
         <div className="space-y-4">
           {data.groups.map((g) => (
-            <GroupCard key={g.category_id ?? "null"} group={g} month={month} accounts={activeAccounts} />
+            <GroupCard key={g.category_id ?? "null"} group={g} month={month} accounts={payingAccounts} />
           ))}
         </div>
 
       )}
 
-      <AdHocForm month={month} expenseCats={expenseCats} />
+      <AdHocForm month={month} expenseCats={expenseCats} accounts={payingAccounts} />
     </div>
   );
 }
@@ -172,14 +214,14 @@ function useInvalidateBudget(month: string) {
   };
 }
 
-function GroupCard({ group, month, accounts }: { group: BudgetGroup; month: string; accounts: { id: string; name: string }[] }) {
+function GroupCard({ group, month, accounts }: { group: BudgetGroup; month: string; accounts: PayAccount[] }) {
   const pct = group.planned > 0 ? Math.round((group.actual / group.planned) * 100) : 0;
   const over = group.actual > group.planned && group.planned > 0;
 
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-3">
-        <span className="inline-block h-3 w-3 rounded-full" style={{ background: group.category_color }} />
+        <CategoryIcon icon={group.category_icon} color={group.category_color} size={28} />
         <span className="font-medium">{group.category_name}</span>
         <span className="text-xs text-muted-foreground">{group.instances.length} item{group.instances.length === 1 ? "" : "s"}</span>
         <div className="ml-auto flex items-center gap-4">
@@ -197,6 +239,8 @@ function GroupCard({ group, month, accounts }: { group: BudgetGroup; month: stri
         </div>
       </div>
 
+      {group.limit != null && group.category_id && <LimitRow group={group} month={month} />}
+
       {group.instances.length > 0 && (
         <ul className="mt-3 divide-y divide-border rounded-md border border-border bg-background">
           {group.instances.map((inst) => (
@@ -209,6 +253,63 @@ function GroupCard({ group, month, accounts }: { group: BudgetGroup; month: stri
 }
 
 
+// Everyday spending against this month's limit. Bill payments in the same category are not
+// counted here; they already show on their own rows below.
+function LimitRow({ group, month }: { group: BudgetGroup; month: string }) {
+  const invalidate = useInvalidateBudget(month);
+  const setLimit = useServerFn(setMonthLimit);
+  const mLimit = useMutation({ mutationFn: setLimit, onSuccess: invalidate, onError: (e: Error) => toast.error(e.message) });
+  const limit = group.limit ?? 0;
+  const billsPaid = group.instances.reduce((acc, i) => acc + (i.transaction_amount ?? 0), 0);
+  const spent = Math.max(0, group.actual - billsPaid);
+  const left = limit - spent;
+  const pct = limit > 0 ? Math.min(100, Math.round((spent / limit) * 100)) : spent > 0 ? 100 : 0;
+
+  return (
+    <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium">Everyday spending</div>
+          <div className={`text-xs tabular-nums ${left < 0 ? "font-medium text-[color:var(--negative)]" : "text-muted-foreground"}`}>
+            {money(spent)} spent · {left < 0 ? `${money(-left)} over` : `${money(left)} left`}
+          </div>
+        </div>
+        <label className="text-right">
+          <span className="block text-[10px] uppercase text-muted-foreground">Limit this month</span>
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            defaultValue={limit}
+            key={`${month}-${limit}`}
+            onBlur={(e) => {
+              const val = Number(e.target.value);
+              if (Number.isFinite(val) && val >= 0 && val !== limit) {
+                mLimit.mutate({ data: { month, category_id: group.category_id!, limit: val } });
+              }
+            }}
+            className="w-24 rounded-md border border-input bg-background px-2 py-1 text-right text-sm tabular-nums"
+          />
+        </label>
+      </div>
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+        <div className={`h-full ${left < 0 ? "bg-[color:var(--negative)]" : "bg-primary"}`} style={{ width: `${pct}%` }} />
+      </div>
+      {group.limit_overridden && (
+        <div className="mt-1.5 text-xs text-muted-foreground">
+          Changed for this month only.{" "}
+          <button
+            className="font-medium text-primary hover:underline"
+            onClick={() => mLimit.mutate({ data: { month, category_id: group.category_id!, limit: null } })}
+          >
+            {group.default_limit == null ? "Remove" : `Reset to ${money(group.default_limit)}`}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StatusBadge({ status }: { status: MonthlyExpenseInstance["status"] }) {
   const map: Record<string, string> = {
     paid: "bg-emerald-100 text-emerald-800",
@@ -219,7 +320,7 @@ function StatusBadge({ status }: { status: MonthlyExpenseInstance["status"] }) {
   return <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ${map[status]}`}>{status}</span>;
 }
 
-function InstanceRow({ inst, month, accounts }: { inst: MonthlyExpenseInstance; month: string; accounts: { id: string; name: string }[] }) {
+function InstanceRow({ inst, month, accounts }: { inst: MonthlyExpenseInstance; month: string; accounts: PayAccount[] }) {
   const invalidate = useInvalidateBudget(month);
   const update = useServerFn(updateInstance);
   const status = useServerFn(setInstanceStatus);
@@ -234,7 +335,8 @@ function InstanceRow({ inst, month, accounts }: { inst: MonthlyExpenseInstance; 
   const [editingName, setEditingName] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
   const [payAmt, setPayAmt] = useState<string>(String(inst.transaction_amount ?? inst.planned_amount ?? 0));
-  const [payAcct, setPayAcct] = useState<string>(accounts[0]?.id ?? "");
+  const [payAcct, setPayAcct] = useState<string>(inst.account_id ?? accounts[0]?.id ?? "");
+  const paysFrom = inst.account_id ? accounts.find((a) => a.id === inst.account_id)?.name ?? null : null;
   const [payDate, setPayDate] = useState<string>(inst.transaction_date ?? new Date().toISOString().slice(0, 10));
   const [payNote, setPayNote] = useState("");
   const [payPending, setPayPending] = useState(false);
@@ -279,6 +381,11 @@ function InstanceRow({ inst, month, accounts }: { inst: MonthlyExpenseInstance; 
             )}
             <StatusBadge status={inst.status} />
           </div>
+          {inst.status !== "paid" && (
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              {paysFrom ? <>From {paysFrom}{inst.account_overridden ? " (this month)" : ""}</> : "Paying account not set"}
+            </div>
+          )}
           {inst.transaction_id && inst.transaction_amount != null && (
             <div className="mt-0.5 text-xs text-muted-foreground">
               Paid {money(inst.transaction_amount, inst.currency)} on {inst.transaction_date}
@@ -354,7 +461,7 @@ function InstanceRow({ inst, month, accounts }: { inst: MonthlyExpenseInstance; 
 }
 
 
-function AdHocForm({ month, expenseCats }: { month: string; expenseCats: { id: string; name: string }[] }) {
+function AdHocForm({ month, expenseCats, accounts }: { month: string; expenseCats: { id: string; name: string }[]; accounts: PayAccount[] }) {
   const invalidate = useInvalidateBudget(month);
   const create = useServerFn(createAdHocInstance);
   const mCreate = useMutation({
@@ -374,8 +481,9 @@ function AdHocForm({ month, expenseCats }: { month: string; expenseCats: { id: s
           const name = String(fd.get("name") || "").trim();
           const category_id = String(fd.get("category_id") || "") || null;
           const planned_amount = Number(fd.get("planned_amount") || 0);
+          const account_id = String(fd.get("account_id") || "") || null;
           if (!name) return;
-          mCreate.mutate({ data: { month, name, category_id, planned_amount, currency: "USD" } });
+          mCreate.mutate({ data: { month, name, category_id, planned_amount, currency: "USD", account_id } });
           (e.currentTarget as HTMLFormElement).reset();
         }}
       >
@@ -393,6 +501,13 @@ function AdHocForm({ month, expenseCats }: { month: string; expenseCats: { id: s
         <label className="flex flex-col gap-1 text-xs">
           <span className="font-medium">Amount</span>
           <TextInput type="number" step="0.01" name="planned_amount" defaultValue="0" className="w-28" />
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="font-medium">Paid from</span>
+          <Select name="account_id" defaultValue="" className="w-44">
+            <option value="">Not set</option>
+            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </Select>
         </label>
         <Button type="submit" disabled={mCreate.isPending}>Add one-off</Button>
       </form>

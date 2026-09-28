@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
@@ -6,7 +6,9 @@ import { toast } from "sonner";
 import {
   createMonthlyExpense,
   deleteMonthlyExpense,
+  listAccounts,
   listCategories,
+  listConstants,
   listMonthlyExpenses,
   updateMonthlyExpense,
   type MonthlyExpense,
@@ -30,12 +32,16 @@ import {
 
 const meQuery = queryOptions({ queryKey: ["monthly_expenses"], queryFn: () => listMonthlyExpenses() });
 const catQuery = queryOptions({ queryKey: ["categories"], queryFn: () => listCategories() });
+const acctQuery = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
+const constQuery = queryOptions({ queryKey: ["constants"], queryFn: () => listConstants() });
 
 export const Route = createFileRoute("/_gated/monthly-expenses")({
   loader: async ({ context }) => {
     await Promise.all([
       context.queryClient.ensureQueryData(meQuery),
       context.queryClient.ensureQueryData(catQuery),
+      context.queryClient.ensureQueryData(acctQuery),
+      context.queryClient.ensureQueryData(constQuery),
     ]);
   },
   component: MonthlyExpensesPage,
@@ -48,6 +54,11 @@ function MonthlyExpensesPage() {
   const { data: items } = useSuspenseQuery(meQuery);
   const { data: cats } = useSuspenseQuery(catQuery);
   const expenseCats = cats.filter((c) => c.kind === "expense" && !c.archived);
+  const { data: accounts } = useSuspenseQuery(acctQuery);
+  const payingAccounts = accounts.filter((a) => !a.archived && a.kind !== "credit");
+  const { data: constants } = useSuspenseQuery(constQuery);
+  const constantsLeft = constants.filter((c) => !c.moved_to).length;
+  const acctName = (id: string | null) => (id ? accounts.find((a) => a.id === id)?.name ?? "Unknown account" : null);
   const qc = useQueryClient();
   const create = useServerFn(createMonthlyExpense);
   const update = useServerFn(updateMonthlyExpense);
@@ -96,7 +107,7 @@ function MonthlyExpensesPage() {
   const formOpen = showForm || !!editing;
 
   const initial: Partial<MonthlyExpense> = editing ?? {
-    name: "", category_id: expenseCats[0]?.id ?? null, default_amount: 0,
+    name: "", category_id: expenseCats[0]?.id ?? null, account_id: null, default_amount: 0,
     currency: "USD", active: true, start_month: null, end_month: null, notes: "", sort_order: 0,
   };
 
@@ -109,6 +120,15 @@ function MonthlyExpensesPage() {
         subtitle="Define recurring expenses once — they show up on every month's Budget automatically."
         actions={!formOpen && <Button onClick={openCreate}>Add expense</Button>}
       />
+      {constantsLeft > 0 && (
+        <Card className="flex flex-wrap items-center justify-between gap-3">
+          <div className="text-sm">
+            <div className="font-medium">{constantsLeft} item{constantsLeft === 1 ? "" : "s"} still in Constants</div>
+            <div className="text-muted-foreground">Constants are being folded into Bills, Subscriptions and Income so everything counts in your budget.</div>
+          </div>
+          <Link to="/constants" className="inline-flex h-10 items-center rounded-md border border-border px-3 text-sm font-medium hover:bg-muted">Review and move</Link>
+        </Card>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-3">
         <Card>
@@ -146,6 +166,7 @@ function MonthlyExpensesPage() {
               const payload = {
                 name: String(fd.get("name") || "").trim(),
                 category_id: (String(fd.get("category_id") || "") || null),
+                account_id: (String(fd.get("account_id") || "") || null),
                 default_amount: Number(fd.get("default_amount") || 0),
                 currency: String(fd.get("currency") || "USD"),
                 active: fd.get("active") === "on",
@@ -163,6 +184,12 @@ function MonthlyExpensesPage() {
               <Select name="category_id" defaultValue={initial.category_id ?? ""}>
                 <option value="">— none —</option>
                 {expenseCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </Select>
+            </Field>
+            <Field label="Paid from" hint="The bank account this bill normally comes out of">
+              <Select name="account_id" defaultValue={initial.account_id ?? ""}>
+                <option value="">Not set</option>
+                {payingAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
               </Select>
             </Field>
             <Field label="Default amount">
@@ -197,13 +224,14 @@ function MonthlyExpensesPage() {
         </EmptyState>
       ) : (
         <Table head={<>
-          <Th>Name</Th><Th>Category</Th><Th className="text-right">Default</Th>
+          <Th>Name</Th><Th>Category</Th><Th>Paid from</Th><Th className="text-right">Default</Th>
           <Th>Window</Th><Th>Status</Th><Th></Th>
         </>}>
           {items.map((m) => (
             <tr key={m.id}>
               <Td className="font-medium">{m.name}</Td>
               <Td>{catName(m.category_id)}</Td>
+              <Td>{acctName(m.account_id) ?? <span className="text-muted-foreground">Not set</span>}</Td>
               <Td className="text-right tabular-nums">{money(m.default_amount, m.currency)}</Td>
               <Td className="text-xs text-muted-foreground">
                 {m.start_month?.slice(0, 7) ?? "—"} → {m.end_month?.slice(0, 7) ?? "∞"}

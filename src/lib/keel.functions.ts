@@ -22,6 +22,10 @@ export type Category = {
   color: string;
   archived: boolean;
   sort_order: number;
+  /** Default everyday spending limit per month; null = no limit (bills-only category). */
+  monthly_limit: number | null;
+  /** lucide icon name, e.g. "shopping-cart"; null = color dot only. */
+  icon: string | null;
 };
 export type Transaction = {
   id: string;
@@ -50,6 +54,8 @@ export type Subscription = {
 };
 export type ConstantItem = {
   id: string;
+  /** Where this constant was moved ("monthly_expenses:<id>" etc.); null = not moved yet. */
+  moved_to: string | null;
   name: string;
   amount: number;
   currency: string;
@@ -184,6 +190,8 @@ export type MonthlyExpense = {
   id: string;
   name: string;
   category_id: string | null;
+  /** Bank account this bill is normally paid from. */
+  account_id: string | null;
   default_amount: number;
   currency: string;
   active: boolean;
@@ -199,6 +207,10 @@ export type MonthlyExpenseInstance = {
   amount_overridden: boolean;
   month: string;
   name: string;
+  /** Effective paying account: this month's override, else the bill's or subscription's default. */
+  account_id: string | null;
+  /** True when account_id was set for this month only. */
+  account_overridden: boolean;
   category_id: string | null;
   category_name: string | null;
   category_color: string | null;
@@ -215,8 +227,16 @@ export type BudgetGroup = {
   category_id: string | null;
   category_name: string;
   category_color: string;
+  category_icon: string | null;
+  /** Bills planned this month + the everyday spending limit, if any. */
   planned: number;
   actual: number;
+  /** Everyday spending limit in effect this month (null = none). */
+  limit: number | null;
+  /** True when this month's limit differs from the category default (a budget_lines row exists). */
+  limit_overridden: boolean;
+  /** The category's default limit, so the UI can offer "reset to default". */
+  default_limit: number | null;
   instances: MonthlyExpenseInstance[];
 };
 
@@ -328,8 +348,8 @@ export const deleteAccount = createServerFn({ method: "POST" })
 export const listCategories = createServerFn({ method: "GET" }).handler(async () => {
   await requireUnlocked();
   const sql = await db();
-  const rows = (await sql`SELECT id, name, kind, color, archived, sort_order FROM categories ORDER BY kind, sort_order, name`) as any[];
-  return rows as Category[];
+  const rows = (await sql`SELECT id, name, kind, color, archived, sort_order, monthly_limit, icon FROM categories ORDER BY kind, sort_order, name`) as any[];
+  return rows.map((r) => ({ ...r, monthly_limit: r.monthly_limit == null ? null : n(r.monthly_limit), icon: s(r.icon) })) as Category[];
 });
 
 const categoryInput = z.object({
@@ -338,6 +358,8 @@ const categoryInput = z.object({
   color: z.string().min(1).max(16).default("#0d9488"),
   archived: z.boolean().default(false),
   sort_order: z.coerce.number().int().default(0),
+  monthly_limit: z.coerce.number().nonnegative().nullable().optional(),
+  icon: z.string().max(40).nullable().optional(),
 });
 
 export const createCategory = createServerFn({ method: "POST" })
@@ -346,8 +368,9 @@ export const createCategory = createServerFn({ method: "POST" })
     await requireUnlocked();
     const sql = await db();
     const rows = (await sql`
-      INSERT INTO categories (name, kind, color, archived, sort_order)
-      VALUES (${data.name}, ${data.kind}, ${data.color}, ${data.archived}, ${data.sort_order})
+      INSERT INTO categories (name, kind, color, archived, sort_order, monthly_limit, icon)
+      VALUES (${data.name}, ${data.kind}, ${data.color}, ${data.archived}, ${data.sort_order},
+              ${data.kind === "expense" ? (data.monthly_limit ?? null) : null}, ${data.icon ?? null})
       RETURNING id`) as any[];
     return { id: rows[0].id as string };
   });
@@ -359,7 +382,8 @@ export const updateCategory = createServerFn({ method: "POST" })
     const sql = await db();
     await sql`
       UPDATE categories SET name = ${data.name}, kind = ${data.kind}, color = ${data.color},
-        archived = ${data.archived}, sort_order = ${data.sort_order}
+        archived = ${data.archived}, sort_order = ${data.sort_order},
+        monthly_limit = ${data.kind === "expense" ? (data.monthly_limit ?? null) : null}, icon = ${data.icon ?? null}
       WHERE id = ${data.id}`;
     return { ok: true };
   });
@@ -566,9 +590,9 @@ export const listConstants = createServerFn({ method: "GET" }).handler(async () 
   await requireUnlocked();
   const sql = await db();
   const rows = (await sql`
-    SELECT id, name, amount, currency, frequency, next_date, account_id, category_id, active, notes
-    FROM constant_items ORDER BY next_date`) as any[];
-  return rows.map((r) => ({ ...r, amount: n(r.amount), next_date: d(r.next_date), notes: s(r.notes) })) as ConstantItem[];
+    SELECT id, name, amount, currency, frequency, next_date, account_id, category_id, active, notes, moved_to
+    FROM constant_items ORDER BY moved_to NULLS FIRST, next_date`) as any[];
+  return rows.map((r) => ({ ...r, amount: n(r.amount), next_date: d(r.next_date), notes: s(r.notes), moved_to: s(r.moved_to) })) as ConstantItem[];
 });
 
 export const createConstant = createServerFn({ method: "POST" })
@@ -604,6 +628,80 @@ export const deleteConstant = createServerFn({ method: "POST" })
     const sql = await db();
     await sql`DELETE FROM constant_items WHERE id = ${data.id}`;
     return { ok: true };
+  });
+
+// Constants are being retired: each one moves to where the rest of the app already looks.
+//   income category            -> Recurring income (Income page)
+//   expense, monthly           -> Monthly Expenses (Bills), keeping its paying account
+//   expense, weekly/qtr/yearly -> Subscriptions (recurring charges; budget uses the monthly equivalent)
+// Constants were never counted in the budget, so a same-named item that already exists in the
+// target is most likely the same bill entered twice. In that case nothing is created and the
+// caller is told, so the user can choose "already there, just mark it moved".
+export type MoveConstantResult =
+  | { status: "moved"; target: string }
+  | { status: "already_moved"; target: string }
+  | { status: "duplicate"; target_label: string; existing_name: string };
+
+export const moveConstant = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({ id: z.string().uuid(), mode: z.enum(["move", "mark_only"]).default("move") }).parse(data),
+  )
+  .handler(async ({ data }): Promise<MoveConstantResult> => {
+    await requireUnlocked();
+    const sql = await db();
+    const rows = (await sql`
+      SELECT ci.*, c.kind AS category_kind FROM constant_items ci
+      LEFT JOIN categories c ON c.id = ci.category_id
+      WHERE ci.id = ${data.id}`) as any[];
+    if (rows.length === 0) throw new Error("Constant not found");
+    const ci = rows[0];
+    if (ci.moved_to) return { status: "already_moved", target: ci.moved_to as string };
+
+    const isIncome = ci.category_kind === "income";
+    const table = isIncome ? "recurring_income" : ci.frequency === "monthly" ? "monthly_expenses" : "subscriptions";
+    const label = isIncome ? "Income" : table === "monthly_expenses" ? "Bills" : "Subscriptions";
+
+    const markMoved = async (target: string) => {
+      await sql`UPDATE constant_items SET moved_to = ${target}, moved_at = now(), active = false WHERE id = ${data.id}`;
+    };
+
+    if (data.mode === "mark_only") {
+      await markMoved(`${table}:existing`);
+      return { status: "moved", target: `${table}:existing` };
+    }
+
+    const dupe = (table === "recurring_income"
+      ? await sql`SELECT name FROM recurring_income WHERE lower(name) = lower(${ci.name}) AND active = true LIMIT 1`
+      : table === "monthly_expenses"
+        ? await sql`SELECT name FROM monthly_expenses WHERE lower(name) = lower(${ci.name}) AND active = true LIMIT 1`
+        : await sql`SELECT name FROM subscriptions WHERE lower(name) = lower(${ci.name}) AND active = true LIMIT 1`) as any[];
+    if (dupe.length > 0) return { status: "duplicate", target_label: label, existing_name: dupe[0].name as string };
+
+    let newId: string;
+    if (table === "recurring_income") {
+      const r = (await sql`
+        INSERT INTO recurring_income (name, amount, currency, frequency, next_date, account_id, category_id, active, notes, is_variable)
+        VALUES (${ci.name}, ${ci.amount}, ${ci.currency}, ${ci.frequency}, ${ci.next_date}, ${ci.account_id}, ${ci.category_id},
+                ${ci.active}, ${ci.notes}, false)
+        RETURNING id`) as any[];
+      newId = r[0].id;
+    } else if (table === "monthly_expenses") {
+      const r = (await sql`
+        INSERT INTO monthly_expenses (name, category_id, account_id, default_amount, currency, active, notes)
+        VALUES (${ci.name}, ${ci.category_id}, ${ci.account_id}, ${ci.amount}, ${ci.currency}, ${ci.active}, ${ci.notes})
+        RETURNING id`) as any[];
+      newId = r[0].id;
+    } else {
+      const r = (await sql`
+        INSERT INTO subscriptions (name, amount, currency, frequency, next_charge_date, account_id, category_id, active, notes)
+        VALUES (${ci.name}, ${ci.amount}, ${ci.currency}, ${ci.frequency}, ${ci.next_date}, ${ci.account_id}, ${ci.category_id},
+                ${ci.active}, ${ci.notes})
+        RETURNING id`) as any[];
+      newId = r[0].id;
+    }
+    const target = `${table}:${newId}`;
+    await markMoved(target);
+    return { status: "moved", target };
   });
 
 // -------------------------- Recurring income --------------------------
@@ -1657,6 +1755,30 @@ export const deleteReminder = createServerFn({ method: "POST" })
   });
 
 // -------------------------- Budget --------------------------
+function mapInstance(r: any): MonthlyExpenseInstance {
+  return {
+    id: r.id,
+    monthly_expense_id: r.monthly_expense_id,
+    subscription_id: r.subscription_id ?? null,
+    amount_overridden: !!r.amount_overridden,
+    month: d(r.month),
+    name: r.name_snapshot,
+    account_id: r.eff_account_id ?? null,
+    account_overridden: r.own_account_id != null,
+    category_id: r.category_id,
+    category_name: r.category_name,
+    category_color: r.category_color,
+    planned_amount: n(r.planned_amount),
+    currency: r.currency,
+    status: r.status,
+    transaction_id: r.transaction_id,
+    transaction_amount: r.tx_amount == null ? null : n(r.tx_amount),
+    transaction_date: r.tx_date == null ? null : d(r.tx_date),
+    is_ad_hoc: !!r.is_ad_hoc,
+    notes: s(r.notes),
+  };
+}
+
 export const getBudget = createServerFn({ method: "GET" })
   .inputValidator((data: unknown) =>
     z.object({ month: z.string().regex(/^\d{4}-\d{2}$/, "Month must be YYYY-MM") }).parse(data),
@@ -1730,33 +1852,19 @@ export const getBudget = createServerFn({ method: "GET" })
       SELECT mei.id, mei.monthly_expense_id, mei.month, mei.name_snapshot, mei.category_id,
              mei.planned_amount, mei.currency, mei.status, mei.transaction_id, mei.is_ad_hoc, mei.notes,
              mei.subscription_id, mei.amount_overridden,
+             mei.account_id AS own_account_id,
+             COALESCE(mei.account_id, me.account_id, sub.account_id) AS eff_account_id,
              c.name AS category_name, c.color AS category_color,
              t.amount AS tx_amount, t.on_date AS tx_date
       FROM monthly_expense_instances mei
       LEFT JOIN categories c ON c.id = mei.category_id
       LEFT JOIN transactions t ON t.id = mei.transaction_id
+      LEFT JOIN monthly_expenses me ON me.id = mei.monthly_expense_id
+      LEFT JOIN subscriptions sub ON sub.id = mei.subscription_id
       WHERE mei.month = ${monthDate}::date
       ORDER BY c.sort_order NULLS LAST, c.name NULLS LAST, mei.name_snapshot`) as any[];
 
-    const instances: MonthlyExpenseInstance[] = instanceRows.map((r) => ({
-      id: r.id,
-      monthly_expense_id: r.monthly_expense_id,
-      subscription_id: r.subscription_id ?? null,
-      amount_overridden: !!r.amount_overridden,
-      month: d(r.month),
-      name: r.name_snapshot,
-      category_id: r.category_id,
-      category_name: r.category_name,
-      category_color: r.category_color,
-      planned_amount: n(r.planned_amount),
-      currency: r.currency,
-      status: r.status,
-      transaction_id: r.transaction_id,
-      transaction_amount: r.tx_amount == null ? null : n(r.tx_amount),
-      transaction_date: r.tx_date == null ? null : d(r.tx_date),
-      is_ad_hoc: !!r.is_ad_hoc,
-      notes: s(r.notes),
-    }));
+    const instances: MonthlyExpenseInstance[] = instanceRows.map(mapInstance);
 
     // Actuals-per-category from transactions this month.
     const actualsRows = (await sql`
@@ -1769,11 +1877,18 @@ export const getBudget = createServerFn({ method: "GET" })
     for (const r of actualsRows) actualByCat.set(r.category_id, n(r.total));
 
     // All expense categories (so a category with no instances/actuals still shows up if desired).
-    const allCatsRows = (await sql`SELECT id, name, color, sort_order FROM categories WHERE kind = 'expense' AND archived = false ORDER BY sort_order, name`) as any[];
+    const allCatsRows = (await sql`SELECT id, name, color, sort_order, monthly_limit, icon FROM categories WHERE kind = 'expense' AND archived = false ORDER BY sort_order, name`) as any[];
+    const iconByCat = new Map<string, string | null>(allCatsRows.map((c) => [c.id as string, s(c.icon)]));
 
     const groupMap = new Map<string | null, BudgetGroup>();
     const upsertGroup = (id: string | null, name: string, color: string) => {
-      if (!groupMap.has(id)) groupMap.set(id, { category_id: id, category_name: name, category_color: color, planned: 0, actual: 0, instances: [] });
+      if (!groupMap.has(id)) {
+        groupMap.set(id, {
+          category_id: id, category_name: name, category_color: color,
+          category_icon: id ? (iconByCat.get(id) ?? null) : null,
+          planned: 0, actual: 0, limit: null, limit_overridden: false, default_limit: null, instances: [],
+        });
+      }
       return groupMap.get(id)!;
     };
 
@@ -1786,6 +1901,25 @@ export const getBudget = createServerFn({ method: "GET" })
       const cat = allCatsRows.find((c) => c.id === catId);
       const g = upsertGroup(catId, cat?.name ?? "Uncategorized", cat?.color ?? "#94a3b8");
       g.actual = total;
+    }
+
+    // Everyday spending limits. Each month starts from the category default (nothing carries
+    // over); a budget_lines row for this month overrides it for this month only.
+    const monthOverride = new Map<string, number>();
+    for (const r of lines) {
+      const items = itemsByLine.get(r.id) ?? [];
+      monthOverride.set(r.category_id, items.length > 0 ? items.reduce((acc, i) => acc + i.amount, 0) : n(r.planned));
+    }
+    for (const cat of allCatsRows) {
+      const def = cat.monthly_limit == null ? null : n(cat.monthly_limit);
+      const over = monthOverride.get(cat.id);
+      const limit = over !== undefined ? over : def;
+      if (limit == null) continue;
+      const g = upsertGroup(cat.id, cat.name, cat.color);
+      g.limit = limit;
+      g.default_limit = def;
+      g.limit_overridden = over !== undefined;
+      g.planned += limit;
     }
 
     const groups = Array.from(groupMap.values()).sort((a, b) => {
@@ -1847,6 +1981,41 @@ export const deleteBudgetLine = createServerFn({ method: "POST" })
     await requireUnlocked();
     const sql = await db();
     await sql`DELETE FROM budget_lines WHERE id = ${data.id}`;
+    return { ok: true };
+  });
+
+// Everyday spending limit for one month. Spending starts fresh each month from the category's
+// default limit; this sets (or clears) a one-month override without touching the default.
+export const setMonthLimit = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      month: z.string().regex(/^\d{4}-\d{2}$/),
+      category_id: z.string().uuid(),
+      /** null = remove the override and go back to the category default */
+      limit: z.coerce.number().nonnegative().nullable(),
+    }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    const monthDate = `${data.month}-01`;
+    const m = (await sql`
+      INSERT INTO budget_months (month) VALUES (${monthDate})
+      ON CONFLICT (month) DO UPDATE SET month = EXCLUDED.month
+      RETURNING id`) as any[];
+    const monthId = m[0].id as string;
+    if (data.limit == null) {
+      await sql`DELETE FROM budget_lines WHERE month_id = ${monthId} AND category_id = ${data.category_id}`;
+    } else {
+      // A typed limit replaces any old sub-item breakdown for that line.
+      await sql`
+        DELETE FROM budget_line_items WHERE budget_line_id IN (
+          SELECT id FROM budget_lines WHERE month_id = ${monthId} AND category_id = ${data.category_id})`;
+      await sql`
+        INSERT INTO budget_lines (month_id, category_id, planned)
+        VALUES (${monthId}, ${data.category_id}, ${data.limit})
+        ON CONFLICT (month_id, category_id) DO UPDATE SET planned = EXCLUDED.planned`;
+    }
     return { ok: true };
   });
 
@@ -1959,6 +2128,7 @@ export const getDashboard = createServerFn({ method: "GET" }).handler(async () =
 const monthlyExpenseInput = z.object({
   name: z.string().min(1, "Name is required").max(80),
   category_id: z.string().uuid().nullable().optional(),
+  account_id: z.string().uuid().nullable().optional(),
   default_amount: z.coerce.number().nonnegative(),
   currency: z.string().min(1).max(8).default("USD"),
   active: z.boolean().default(true),
@@ -1979,7 +2149,7 @@ export const listMonthlyExpenses = createServerFn({ method: "GET" }).handler(asy
   await requireUnlocked();
   const sql = await db();
   const rows = (await sql`
-    SELECT id, name, category_id, default_amount, currency, active, start_month, end_month, notes, sort_order
+    SELECT id, name, category_id, account_id, default_amount, currency, active, start_month, end_month, notes, sort_order
     FROM monthly_expenses ORDER BY sort_order, name`) as any[];
   return rows.map((r) => ({
     ...r,
@@ -1997,8 +2167,8 @@ export const createMonthlyExpense = createServerFn({ method: "POST" })
     const sql = await db();
     try {
       const rows = (await sql`
-        INSERT INTO monthly_expenses (name, category_id, default_amount, currency, active, start_month, end_month, notes, sort_order)
-        VALUES (${data.name}, ${data.category_id ?? null}, ${data.default_amount}, ${data.currency}, ${data.active},
+        INSERT INTO monthly_expenses (name, category_id, account_id, default_amount, currency, active, start_month, end_month, notes, sort_order)
+        VALUES (${data.name}, ${data.category_id ?? null}, ${data.account_id ?? null}, ${data.default_amount}, ${data.currency}, ${data.active},
                 ${monthStartOrNull(data.start_month)}, ${monthStartOrNull(data.end_month)}, ${data.notes ?? null}, ${data.sort_order})
         RETURNING id`) as any[];
       return { id: rows[0].id as string };
@@ -2045,7 +2215,7 @@ export const updateMonthlyExpense = createServerFn({ method: "POST" })
       // 2. Update the definition (drives months not yet materialized).
       await sql`
         UPDATE monthly_expenses SET
-          name = ${data.name}, category_id = ${data.category_id ?? null},
+          name = ${data.name}, category_id = ${data.category_id ?? null}, account_id = ${data.account_id ?? null},
           default_amount = ${data.default_amount}, currency = ${data.currency},
           active = ${data.active}, start_month = ${start}, end_month = ${end},
           notes = ${data.notes ?? null}, sort_order = ${data.sort_order}
@@ -2095,32 +2265,18 @@ export const listMonthInstances = createServerFn({ method: "GET" })
       SELECT mei.id, mei.monthly_expense_id, mei.month, mei.name_snapshot, mei.category_id,
              mei.planned_amount, mei.currency, mei.status, mei.transaction_id, mei.is_ad_hoc, mei.notes,
              mei.subscription_id, mei.amount_overridden,
+             mei.account_id AS own_account_id,
+             COALESCE(mei.account_id, me.account_id, sub.account_id) AS eff_account_id,
              c.name AS category_name, c.color AS category_color,
              t.amount AS tx_amount, t.on_date AS tx_date
       FROM monthly_expense_instances mei
       LEFT JOIN categories c ON c.id = mei.category_id
       LEFT JOIN transactions t ON t.id = mei.transaction_id
+      LEFT JOIN monthly_expenses me ON me.id = mei.monthly_expense_id
+      LEFT JOIN subscriptions sub ON sub.id = mei.subscription_id
       WHERE mei.month = ${monthDate}::date
       ORDER BY c.sort_order NULLS LAST, mei.name_snapshot`) as any[];
-    return rows.map((r) => ({
-      id: r.id,
-      monthly_expense_id: r.monthly_expense_id,
-      subscription_id: r.subscription_id ?? null,
-      amount_overridden: !!r.amount_overridden,
-      month: d(r.month),
-      name: r.name_snapshot,
-      category_id: r.category_id,
-      category_name: r.category_name,
-      category_color: r.category_color,
-      planned_amount: n(r.planned_amount),
-      currency: r.currency,
-      status: r.status,
-      transaction_id: r.transaction_id,
-      transaction_amount: r.tx_amount == null ? null : n(r.tx_amount),
-      transaction_date: r.tx_date == null ? null : d(r.tx_date),
-      is_ad_hoc: !!r.is_ad_hoc,
-      notes: s(r.notes),
-    })) as MonthlyExpenseInstance[];
+    return rows.map(mapInstance);
   });
 
 export const createAdHocInstance = createServerFn({ method: "POST" })
@@ -2132,6 +2288,7 @@ export const createAdHocInstance = createServerFn({ method: "POST" })
       planned_amount: z.coerce.number().nonnegative(),
       currency: z.string().min(1).max(8).default("USD"),
       notes: z.string().max(500).nullable().optional(),
+      account_id: z.string().uuid().nullable().optional(),
     }).parse(data),
   )
   .handler(async ({ data }) => {
@@ -2140,8 +2297,8 @@ export const createAdHocInstance = createServerFn({ method: "POST" })
     const monthDate = `${data.month}-01`;
     const rows = (await sql`
       INSERT INTO monthly_expense_instances
-        (monthly_expense_id, month, name_snapshot, category_id, planned_amount, currency, status, is_ad_hoc, notes)
-      VALUES (NULL, ${monthDate}, ${data.name}, ${data.category_id ?? null}, ${data.planned_amount}, ${data.currency}, 'pending', true, ${data.notes ?? null})
+        (monthly_expense_id, month, name_snapshot, category_id, planned_amount, currency, status, is_ad_hoc, notes, account_id)
+      VALUES (NULL, ${monthDate}, ${data.name}, ${data.category_id ?? null}, ${data.planned_amount}, ${data.currency}, 'pending', true, ${data.notes ?? null}, ${data.account_id ?? null})
       RETURNING id`) as any[];
     return { id: rows[0].id as string };
   });
@@ -2154,22 +2311,26 @@ export const updateInstance = createServerFn({ method: "POST" })
       category_id: z.string().uuid().nullable().optional(),
       planned_amount: z.coerce.number().nonnegative().optional(),
       notes: z.string().max(500).nullable().optional(),
+      /** Paying account for this month only; null clears the override (back to the bill's default). */
+      account_id: z.string().uuid().nullable().optional(),
     }).parse(data),
   )
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
     // Build a partial update — only overwrite provided fields.
-    const cur = (await sql`SELECT name_snapshot, category_id, planned_amount, notes FROM monthly_expense_instances WHERE id = ${data.id}`) as any[];
+    const cur = (await sql`SELECT name_snapshot, category_id, planned_amount, notes, account_id FROM monthly_expense_instances WHERE id = ${data.id}`) as any[];
     if (cur.length === 0) throw new Error("Instance not found");
     const name = data.name ?? cur[0].name_snapshot;
     const categoryId = data.category_id === undefined ? cur[0].category_id : data.category_id;
     const planned = data.planned_amount === undefined ? n(cur[0].planned_amount) : data.planned_amount;
     const notes = data.notes === undefined ? cur[0].notes : data.notes;
     const overridden = data.planned_amount !== undefined && data.planned_amount !== n(cur[0].planned_amount);
+    const accountId = data.account_id === undefined ? cur[0].account_id : data.account_id;
     await sql`
       UPDATE monthly_expense_instances
       SET name_snapshot = ${name}, category_id = ${categoryId}, planned_amount = ${planned}, notes = ${notes},
+          account_id = ${accountId},
           amount_overridden = amount_overridden OR ${overridden}
       WHERE id = ${data.id}`;
     return { ok: true };

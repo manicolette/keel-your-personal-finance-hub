@@ -1,5 +1,10 @@
 import { type ReactNode } from "react";
 import { clsx } from "clsx";
+import {
+  Baby, Briefcase, Car, Coffee, CreditCard as CreditCardIcon, Droplet, Fuel, Gift, GraduationCap, HeartPulse, Home,
+  Package, PiggyBank, Plane, Repeat as RepeatIcon, Shield, Shirt, ShoppingCart, Smartphone, Smile, Sparkles, Tag, Tv,
+  Utensils, Wifi, Zap, type LucideIcon,
+} from "lucide-react";
 
 export function money(v: number | string | null | undefined, currency = "USD") {
   const n = typeof v === "number" ? v : Number(v ?? 0);
@@ -172,5 +177,54 @@ export function OverrideConfirm({
         <Button size="sm" onClick={onOverwrite} disabled={busy}>Overwrite them</Button>
       </div>
     </div>
+  );
+}
+
+// ---------------- Category icons ----------------
+// A curated set so the picker stays short; names are stored in categories.icon.
+export const CATEGORY_ICONS = {
+  "home": Home,
+  "zap": Zap,
+  "droplet": Droplet,
+  "wifi": Wifi,
+  "smartphone": Smartphone,
+  "car": Car,
+  "fuel": Fuel,
+  "shield": Shield,
+  "shopping-cart": ShoppingCart,
+  "utensils": Utensils,
+  "coffee": Coffee,
+  "sparkles": Sparkles,
+  "smile": Smile,
+  "shirt": Shirt,
+  "heart-pulse": HeartPulse,
+  "graduation-cap": GraduationCap,
+  "baby": Baby,
+  "gift": Gift,
+  "plane": Plane,
+  "tv": Tv,
+  "repeat": RepeatIcon,
+  "credit-card": CreditCardIcon,
+  "piggy-bank": PiggyBank,
+  "briefcase": Briefcase,
+  "package": Package,
+  "tag": Tag,
+} as const satisfies Record<string, LucideIcon>;
+export type CategoryIconName = keyof typeof CATEGORY_ICONS;
+
+/** Rounded tile with the category's icon on a light tint of its color; falls back to a color dot. */
+export function CategoryIcon({ icon, color, size = 32 }: { icon: string | null | undefined; color: string; size?: number }) {
+  const Icon = icon ? CATEGORY_ICONS[icon as CategoryIconName] : undefined;
+  if (!Icon) {
+    return <span aria-hidden className="inline-block shrink-0 rounded-full" style={{ width: size / 2.5, height: size / 2.5, background: color }} />;
+  }
+  return (
+    <span
+      aria-hidden
+      className="inline-flex shrink-0 items-center justify-center rounded-lg"
+      style={{ width: size, height: size, background: `color-mix(in srgb, ${color} 18%, transparent)`, color }}
+    >
+      <Icon size={Math.round(size * 0.55)} strokeWidth={2} />
+    </span>
   );
 }

@@ -9,6 +9,7 @@ import {
   listAccounts,
   listCategories,
   listConstants,
+  moveConstant,
   updateConstant,
   type ConstantItem,
 } from "@/lib/keel.functions";
@@ -43,6 +44,48 @@ function ConstantsPage() {
   const [editing, setEditing] = useState<ConstantItem | null>(null);
   const [showForm, setShowForm] = useState(false);
   const invalidate = () => qc.invalidateQueries({ queryKey: ["constants"] });
+  const move = useServerFn(moveConstant);
+  const [moving, setMoving] = useState<string | null>(null);
+  const catKind = (id: string | null) => (id ? cats.find((c) => c.id === id)?.kind ?? null : null);
+  const destination = (c: ConstantItem) =>
+    catKind(c.category_id) === "income" ? "Income" : c.frequency === "monthly" ? "Bills" : "Subscriptions";
+  const movedLabel = (t: string) =>
+    t.startsWith("recurring_income") ? "Income" : t.startsWith("monthly_expenses") ? "Bills" : "Subscriptions";
+
+  // Moves one constant; on a same-name match asks before just marking it moved. Returns false if
+  // the user stopped, so "Move all" can stop too.
+  const moveOne = async (c: ConstantItem): Promise<boolean> => {
+    setMoving(c.id);
+    try {
+      const res = await move({ data: { id: c.id, mode: "move" } });
+      if (res.status === "duplicate") {
+        const ok = confirm(
+          `"${res.existing_name}" is already in ${res.target_label}. Mark "${c.name}" as moved without making a copy?`,
+        );
+        if (!ok) return false;
+        await move({ data: { id: c.id, mode: "mark_only" } });
+      }
+      return true;
+    } catch (e) {
+      toast.error((e as Error).message);
+      return false;
+    } finally {
+      setMoving(null);
+      invalidate();
+      qc.invalidateQueries({ queryKey: ["monthly_expenses"] });
+      qc.invalidateQueries({ queryKey: ["subscriptions"] });
+      qc.invalidateQueries({ queryKey: ["budget"] });
+    }
+  };
+  const moveAll = async () => {
+    let count = 0;
+    for (const c of items.filter((i) => !i.moved_to)) {
+      if (!(await moveOne(c))) break;
+      count++;
+    }
+    if (count > 0) toast.success(`Moved ${count} item${count === 1 ? "" : "s"}`);
+  };
+  const remaining = items.filter((i) => !i.moved_to).length;
 
   const mCreate = useMutation({ mutationFn: create,
     onSuccess: () => { toast.success("Saved"); invalidate(); setShowForm(false); },
@@ -62,8 +105,13 @@ function ConstantsPage() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Constants" subtitle="Fixed recurring items (rent, salary, insurance…)"
-        actions={!formOpen && <Button onClick={() => { setShowForm(true); setEditing(null); }}>Add</Button>} />
+      <PageHeader title="Constants" subtitle="Being retired. Move each item to Bills, Subscriptions or Income so it counts in your budget."
+        actions={remaining > 0 && <Button onClick={moveAll} disabled={moving !== null}>Move all ({remaining})</Button>} />
+      <Card className="text-sm text-muted-foreground">
+        Monthly expenses go to Bills with the same paying account. Weekly, quarterly and yearly expenses go to
+        Subscriptions, which the budget counts at their monthly amount. Anything in an income category goes to Income.
+        Moved items stay listed here, switched off, so nothing is lost.
+      </Card>
 
       {formOpen && (
         <Card>
@@ -121,16 +169,22 @@ function ConstantsPage() {
       )}
 
       {items.length === 0 ? <EmptyState>No constants yet.</EmptyState> : (
-        <Table head={<><Th>Name</Th><Th>Freq</Th><Th>Next</Th><Th className="text-right">Amount</Th><Th></Th></>}>
+        <Table head={<><Th>Name</Th><Th>Freq</Th><Th>Next</Th><Th className="text-right">Amount</Th><Th>Goes to</Th><Th></Th></>}>
           {items.map((s) => (
-            <tr key={s.id} className={s.active ? "" : "opacity-60"}>
+            <tr key={s.id} className={s.active && !s.moved_to ? "" : "opacity-60"}>
               <Td className="font-medium">{s.name}</Td>
               <Td className="capitalize">{s.frequency}</Td>
               <Td>{s.next_date}</Td>
               <Td className="text-right tabular-nums">{money(s.amount, s.currency)}</Td>
+              <Td>{s.moved_to ? <span className="text-xs font-medium">Moved to {movedLabel(s.moved_to)}</span> : destination(s)}</Td>
               <Td className="text-right">
                 <div className="flex justify-end gap-1">
-                  <Button size="sm" variant="outline" onClick={() => { setEditing(s); setShowForm(false); }}>Edit</Button>
+                  {!s.moved_to && (
+                    <Button size="sm" onClick={async () => { if (await moveOne(s)) toast.success(`Moved to ${destination(s)}`); }} disabled={moving !== null}>
+                      {moving === s.id ? "Moving…" : "Move"}
+                    </Button>
+                  )}
+                  {!s.moved_to && <Button size="sm" variant="outline" onClick={() => { setEditing(s); setShowForm(false); }}>Edit</Button>}
                   <Button size="sm" variant="danger" onClick={() => confirm(`Delete ${s.name}?`) && mDelete.mutate({ data: { id: s.id } })}>Delete</Button>
                 </div>
               </Td>

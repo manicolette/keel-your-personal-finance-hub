@@ -295,6 +295,22 @@ UPDATE debts d SET
   anchor_set_at = now(),
   balance_as_of = GREATEST(CURRENT_DATE, COALESCE((SELECT MAX(p.payment_date) FROM debt_payments p WHERE p.debt_id = d.id), CURRENT_DATE))
 WHERE d.anchor_balance IS NULL;
+
+-- Additive: which bank account pays each bill. The definition holds the default; an instance
+-- can override it for one month (ad-hoc bills, or "paid from a different account this time").
+ALTER TABLE monthly_expenses ADD COLUMN IF NOT EXISTS account_id uuid REFERENCES accounts(id) ON DELETE SET NULL;
+ALTER TABLE monthly_expense_instances ADD COLUMN IF NOT EXISTS account_id uuid REFERENCES accounts(id) ON DELETE SET NULL;
+
+-- Additive: everyday spending limits and icons on categories. monthly_limit is the default each
+-- month starts from (spending starts fresh every month); budget_lines.planned overrides it for
+-- a single month.
+ALTER TABLE categories ADD COLUMN IF NOT EXISTS monthly_limit numeric(14,2);
+ALTER TABLE categories ADD COLUMN IF NOT EXISTS icon text;
+
+-- Additive: Constants are being folded into Bills / Subscriptions / Income. moved_to records
+-- where a constant went ("monthly_expenses:<id>", "subscriptions:<id>", "recurring_income:<id>").
+ALTER TABLE constant_items ADD COLUMN IF NOT EXISTS moved_to text;
+ALTER TABLE constant_items ADD COLUMN IF NOT EXISTS moved_at timestamptz;
 `;
 
 export function ensureSchema(): Promise<void> {
