@@ -165,6 +165,8 @@ export type Settings = {
   id: string;
   base_currency: string;
   week_start: string;
+  /** First month Keel tracks, "YYYY-MM". Nothing before it is shown. */
+  start_month: string;
 };
 export type BudgetLineItem = {
   id: string;
@@ -192,6 +194,8 @@ export type MonthlyExpense = {
   category_id: string | null;
   /** Bank account this bill is normally paid from. */
   account_id: string | null;
+  /** Day of the month it is due (1-31), if known. */
+  due_day: number | null;
   default_amount: number;
   currency: string;
   active: boolean;
@@ -211,6 +215,8 @@ export type MonthlyExpenseInstance = {
   account_id: string | null;
   /** True when account_id was set for this month only. */
   account_overridden: boolean;
+  /** Day of the month due: the bill's due day, or a subscription's charge day. */
+  due_day: number | null;
   category_id: string | null;
   category_name: string | null;
   category_color: string | null;
@@ -240,6 +246,9 @@ export type BudgetGroup = {
   instances: MonthlyExpenseInstance[];
 };
 
+/** Keel starts tracking in October 2026 unless changed in Settings. */
+export const DEFAULT_START_MONTH = "2026-10";
+
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 const s = (v: unknown): string | null => (v == null ? null : String(v));
 const d = (v: unknown): string => {
@@ -254,8 +263,9 @@ const dOrNull = (v: unknown): string | null => (v == null ? null : d(v));
 export const getSettings = createServerFn({ method: "GET" }).handler(async () => {
   await requireUnlocked();
   const sql = await db();
-  const rows = (await sql`SELECT id, base_currency, week_start FROM app_settings LIMIT 1`) as any[];
-  return rows[0] as Settings;
+  const rows = (await sql`SELECT id, base_currency, week_start, start_month FROM app_settings LIMIT 1`) as any[];
+  const r = rows[0];
+  return { ...r, start_month: r.start_month ? d(r.start_month).slice(0, 7) : DEFAULT_START_MONTH } as Settings;
 });
 
 export const updateSettings = createServerFn({ method: "POST" })
@@ -265,6 +275,7 @@ export const updateSettings = createServerFn({ method: "POST" })
         id: z.string().uuid(),
         base_currency: z.string().min(1).max(8),
         week_start: z.enum(["sunday", "monday"]),
+        start_month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
       })
       .parse(data),
   )
@@ -272,6 +283,7 @@ export const updateSettings = createServerFn({ method: "POST" })
     await requireUnlocked();
     const sql = await db();
     await sql`UPDATE app_settings SET base_currency = ${data.base_currency}, week_start = ${data.week_start} WHERE id = ${data.id}`;
+    if (data.start_month) await sql`UPDATE app_settings SET start_month = ${data.start_month + "-01"} WHERE id = ${data.id}`;
     return { ok: true };
   });
 
@@ -281,6 +293,10 @@ export const updateSettings = createServerFn({ method: "POST" })
 export const listAccounts = createServerFn({ method: "GET" }).handler(async () => {
   await requireUnlocked();
   const sql = await db();
+  return loadAccounts(sql);
+});
+
+async function loadAccounts(sql: any): Promise<Account[]> {
   const rows = (await sql`
     SELECT a.id, a.name, a.kind, a.currency, a.opening_balance, a.archived, a.sort_order,
       a.opening_balance
@@ -299,7 +315,7 @@ export const listAccounts = createServerFn({ method: "GET" }).handler(async () =
     opening_balance: n(r.opening_balance),
     current_balance: n(r.current_balance),
   })) as Account[];
-});
+}
 
 const accountInput = z.object({
   name: z.string().min(1).max(80),
@@ -997,6 +1013,11 @@ export const getIncome = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
+    return loadIncome(sql, data.month);
+  });
+
+async function loadIncome(sql: any, month: string) {
+    const data = { month };
     const monthIso = `${data.month}-01`;
     await materializeIncomeMonth(sql, monthIso);
     const monthEndDay = daysInMonth(Number(data.month.slice(0, 4)), Number(data.month.slice(5, 7)));
@@ -1033,7 +1054,7 @@ export const getIncome = createServerFn({ method: "GET" })
       .filter((i) => i.status === "received")
       .reduce((a, b) => a + (b.received_amount ?? 0), 0);
     return { month: data.month, instances, expectedTotal, receivedTotal };
-  });
+}
 
 export const updateIncomeInstance = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) =>
@@ -1649,7 +1670,8 @@ export const getLiveNetWorth = createServerFn({ method: "GET" }).handler(async (
   const sql = await db();
   const [settingsRows, accts, txSums, debts, rates] = await Promise.all([
     sql`SELECT base_currency FROM app_settings LIMIT 1` as Promise<any[]>,
-    sql`SELECT id, name, currency, opening_balance, kind FROM accounts WHERE archived = false` as Promise<any[]>,
+    // Credit cards are tracked as debts (Debts page), so they are left out here to avoid counting them twice.
+    sql`SELECT id, name, currency, opening_balance, kind FROM accounts WHERE archived = false AND kind <> 'credit'` as Promise<any[]>,
     sql`
       SELECT account_id, kind, SUM(amount) AS total
       FROM transactions GROUP BY account_id, kind` as Promise<any[]>,
@@ -1765,6 +1787,7 @@ function mapInstance(r: any): MonthlyExpenseInstance {
     name: r.name_snapshot,
     account_id: r.eff_account_id ?? null,
     account_overridden: r.own_account_id != null,
+    due_day: r.due_day == null ? null : Number(r.due_day),
     category_id: r.category_id,
     category_name: r.category_name,
     category_color: r.category_color,
@@ -1786,7 +1809,12 @@ export const getBudget = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
-    const monthDate = `${data.month}-01`;
+    return loadBudget(sql, data.month);
+  });
+
+// Shared by the Budget page and Home: materializes this month's bills and returns groups.
+async function loadBudget(sql: any, monthYm: string) {
+    const monthDate = `${monthYm}-01`;
 
     const monthRows = (await sql`
       INSERT INTO budget_months (month) VALUES (${monthDate})
@@ -1854,6 +1882,7 @@ export const getBudget = createServerFn({ method: "GET" })
              mei.subscription_id, mei.amount_overridden,
              mei.account_id AS own_account_id,
              COALESCE(mei.account_id, me.account_id, sub.account_id) AS eff_account_id,
+             COALESCE(me.due_day, EXTRACT(DAY FROM sub.next_charge_date)::int) AS due_day,
              c.name AS category_name, c.color AS category_color,
              t.amount AS tx_amount, t.on_date AS tx_date
       FROM monthly_expense_instances mei
@@ -1953,7 +1982,7 @@ export const getBudget = createServerFn({ method: "GET" })
         } as BudgetLine;
       }),
     };
-  });
+}
 
 export const upsertBudgetLine = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) =>
@@ -2137,6 +2166,7 @@ const monthlyExpenseInput = z.object({
   name: z.string().min(1, "Name is required").max(80),
   category_id: z.string().uuid().nullable().optional(),
   account_id: z.string().uuid().nullable().optional(),
+  due_day: z.coerce.number().int().min(1).max(31).nullable().optional(),
   default_amount: z.coerce.number().nonnegative(),
   currency: z.string().min(1).max(8).default("USD"),
   active: z.boolean().default(true),
@@ -2157,10 +2187,11 @@ export const listMonthlyExpenses = createServerFn({ method: "GET" }).handler(asy
   await requireUnlocked();
   const sql = await db();
   const rows = (await sql`
-    SELECT id, name, category_id, account_id, default_amount, currency, active, start_month, end_month, notes, sort_order
+    SELECT id, name, category_id, account_id, due_day, default_amount, currency, active, start_month, end_month, notes, sort_order
     FROM monthly_expenses ORDER BY sort_order, name`) as any[];
   return rows.map((r) => ({
     ...r,
+    due_day: r.due_day == null ? null : Number(r.due_day),
     default_amount: n(r.default_amount),
     start_month: dOrNull(r.start_month),
     end_month: dOrNull(r.end_month),
@@ -2175,8 +2206,8 @@ export const createMonthlyExpense = createServerFn({ method: "POST" })
     const sql = await db();
     try {
       const rows = (await sql`
-        INSERT INTO monthly_expenses (name, category_id, account_id, default_amount, currency, active, start_month, end_month, notes, sort_order)
-        VALUES (${data.name}, ${data.category_id ?? null}, ${data.account_id ?? null}, ${data.default_amount}, ${data.currency}, ${data.active},
+        INSERT INTO monthly_expenses (name, category_id, account_id, due_day, default_amount, currency, active, start_month, end_month, notes, sort_order)
+        VALUES (${data.name}, ${data.category_id ?? null}, ${data.account_id ?? null}, ${data.due_day ?? null}, ${data.default_amount}, ${data.currency}, ${data.active},
                 ${monthStartOrNull(data.start_month)}, ${monthStartOrNull(data.end_month)}, ${data.notes ?? null}, ${data.sort_order})
         RETURNING id`) as any[];
       return { id: rows[0].id as string };
@@ -2224,6 +2255,7 @@ export const updateMonthlyExpense = createServerFn({ method: "POST" })
       await sql`
         UPDATE monthly_expenses SET
           name = ${data.name}, category_id = ${data.category_id ?? null}, account_id = ${data.account_id ?? null},
+          due_day = ${data.due_day ?? null},
           default_amount = ${data.default_amount}, currency = ${data.currency},
           active = ${data.active}, start_month = ${start}, end_month = ${end},
           notes = ${data.notes ?? null}, sort_order = ${data.sort_order}
@@ -2275,6 +2307,7 @@ export const listMonthInstances = createServerFn({ method: "GET" })
              mei.subscription_id, mei.amount_overridden,
              mei.account_id AS own_account_id,
              COALESCE(mei.account_id, me.account_id, sub.account_id) AS eff_account_id,
+             COALESCE(me.due_day, EXTRACT(DAY FROM sub.next_charge_date)::int) AS due_day,
              c.name AS category_name, c.color AS category_color,
              t.amount AS tx_amount, t.on_date AS tx_date
       FROM monthly_expense_instances mei
@@ -2399,4 +2432,148 @@ export const unlinkInstance = createServerFn({ method: "POST" })
     const sql = await db();
     await sql`UPDATE monthly_expense_instances SET transaction_id = NULL, status = 'pending' WHERE id = ${data.id}`;
     return { ok: true };
+  });
+
+// -------------------------- Home --------------------------
+export type HomeAccount = {
+  id: string;
+  name: string;
+  currency: string;
+  balance: number;
+  /** Bills still to pay this month from this account. */
+  due: number;
+  /** Names of those bills, for the "which bills does this pay" line. */
+  bill_names: string[];
+  short: number;
+};
+export type HomeData = {
+  month: string;
+  start_month: string;
+  income_expected: number;
+  income_received: number;
+  income_still_expected: number;
+  next_income: { name: string; date: string; amount: number | null } | null;
+  /** Every expense transaction this month (bills paid + everyday). */
+  spent: number;
+  bills_total: number;
+  bills_paid: number;
+  bills_due: number;
+  /** Income received this month, minus spending so far, minus bills still due. */
+  safe_to_spend: number;
+  days_left: number;
+  groups: BudgetGroup[];
+  accounts: HomeAccount[];
+  goals: Goal[];
+  debt: { total: number; minimums: number; extra: number; count: number };
+  reminders: { id: string; title: string; due_date: string; amount: number | null }[];
+};
+
+const clampMonth = (month: string, start: string) => (month < start ? start : month);
+
+export const getHome = createServerFn({ method: "GET" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      month: z.string().regex(/^\d{4}-\d{2}$/),
+      /** Today's date on the viewer's device, so "days left" follows their time zone. */
+      today: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    }).parse(data),
+  )
+  .handler(async ({ data }): Promise<HomeData> => {
+    await requireUnlocked();
+    const sql = await db();
+    const settings = (await sql`SELECT start_month FROM app_settings LIMIT 1`) as any[];
+    const start = settings[0]?.start_month ? d(settings[0].start_month).slice(0, 7) : DEFAULT_START_MONTH;
+    const month = clampMonth(data.month, start);
+
+    const [budget, income, accounts, goalRows, debtRows, reminderRows, incomeTx] = await Promise.all([
+      loadBudget(sql, month),
+      loadIncome(sql, month),
+      loadAccounts(sql),
+      sql`
+        SELECT g.id, g.name, g.target_amount, g.saved_amount, g.target_date, g.notes, g.account_id,
+          a.name AS account_name,
+          COALESCE((SELECT SUM(CASE WHEN t.kind = 'expense' THEN -t.amount ELSE t.amount END)
+                    FROM transactions t WHERE t.goal_id = g.id), 0) AS contributed_amount
+        FROM goals g LEFT JOIN accounts a ON a.id = g.account_id ORDER BY g.name` as Promise<any[]>,
+      sql`SELECT balance, min_payment, extra_payment FROM debts WHERE paid_off_at IS NULL` as Promise<any[]>,
+      sql`
+        SELECT id, title, due_date, amount FROM reminders
+        WHERE done = false AND due_date < (${month + "-01"}::date + interval '1 month')
+        ORDER BY due_date LIMIT 5` as Promise<any[]>,
+      // Money in = every income transaction this month, whether or not it was matched to an expected payment.
+      sql`
+        SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
+        WHERE kind = 'income' AND date_trunc('month', on_date) = date_trunc('month', ${month + "-01"}::date)` as Promise<any[]>,
+    ]);
+    const received = n(incomeTx[0]?.total);
+
+    const instances = budget.groups.flatMap((g) => g.instances).filter((i) => i.status !== "paused" && i.status !== "skipped");
+    const billsTotal = instances.reduce((a, i) => a + i.planned_amount, 0);
+    const pending = instances.filter((i) => i.status === "pending");
+    const billsDue = pending.reduce((a, i) => a + i.planned_amount, 0);
+    const billsPaid = billsTotal - billsDue;
+    const spent = budget.groups.reduce((a, g) => a + g.actual, 0);
+
+    const dueByAccount = new Map<string, { due: number; names: string[] }>();
+    for (const i of pending) {
+      if (!i.account_id) continue;
+      const cur = dueByAccount.get(i.account_id) ?? { due: 0, names: [] };
+      cur.due += i.planned_amount;
+      cur.names.push(i.name);
+      dueByAccount.set(i.account_id, cur);
+    }
+    const homeAccounts: HomeAccount[] = accounts
+      .filter((a) => !a.archived && a.kind !== "credit")
+      .map((a) => {
+        const due = dueByAccount.get(a.id);
+        return {
+          id: a.id, name: a.name, currency: a.currency, balance: a.current_balance,
+          due: round2(due?.due ?? 0), bill_names: due?.names ?? [],
+          short: round2(Math.max(0, (due?.due ?? 0) - a.current_balance)),
+        };
+      })
+      .sort((x, y) => (y.due > 0 ? 1 : 0) - (x.due > 0 ? 1 : 0));
+
+    // What's still to come: the month's expected income not yet covered by money that came in.
+    const stillExpected = Math.max(0, income.expectedTotal - received);
+    const next = income.instances.find((i) => i.status === "expected" && i.expected_date >= data.today) ?? null;
+
+    const [y, m] = month.split("-").map(Number);
+    const monthDays = daysInMonth(y, m);
+    const todayYm = data.today.slice(0, 7);
+    const daysLeft = todayYm === month ? monthDays - Number(data.today.slice(8, 10)) + 1 : todayYm < month ? monthDays : 0;
+
+    return {
+      month,
+      start_month: start,
+      income_expected: round2(income.expectedTotal),
+      income_received: round2(received),
+      income_still_expected: round2(stillExpected),
+      next_income: next ? { name: next.name, date: next.expected_date, amount: next.expected_amount } : null,
+      spent: round2(spent),
+      bills_total: round2(billsTotal),
+      bills_paid: round2(billsPaid),
+      bills_due: round2(billsDue),
+      safe_to_spend: round2(received - spent - billsDue),
+      days_left: daysLeft,
+      groups: budget.groups,
+      accounts: homeAccounts,
+      goals: goalRows.map((r) => ({
+        ...r,
+        target_amount: n(r.target_amount),
+        saved_amount: n(r.saved_amount),
+        contributed_amount: n(r.contributed_amount),
+        progress_amount: n(r.saved_amount) + n(r.contributed_amount),
+        target_date: r.target_date ? d(r.target_date) : null,
+        notes: s(r.notes),
+        account_name: s(r.account_name),
+      })) as Goal[],
+      debt: {
+        total: round2(debtRows.reduce((a, r) => a + n(r.balance), 0)),
+        minimums: round2(debtRows.reduce((a, r) => a + n(r.min_payment), 0)),
+        extra: round2(debtRows.reduce((a, r) => a + n(r.extra_payment), 0)),
+        count: debtRows.length,
+      },
+      reminders: reminderRows.map((r) => ({ id: r.id, title: r.title, due_date: d(r.due_date), amount: r.amount == null ? null : n(r.amount) })),
+    };
   });

@@ -107,7 +107,7 @@ function MonthlyExpensesPage() {
   const formOpen = showForm || !!editing;
 
   const initial: Partial<MonthlyExpense> = editing ?? {
-    name: "", category_id: expenseCats[0]?.id ?? null, account_id: null, default_amount: 0,
+    name: "", category_id: expenseCats[0]?.id ?? null, account_id: null, due_day: null, default_amount: 0,
     currency: "USD", active: true, start_month: null, end_month: null, notes: "", sort_order: 0,
   };
 
@@ -116,8 +116,8 @@ function MonthlyExpensesPage() {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Monthly Expenses"
-        subtitle="Define recurring expenses once — they show up on every month's Budget automatically."
+        title="Bills"
+        subtitle="Set each bill up once. It shows on every month's budget from Keel's start month on."
         actions={!formOpen && <Button onClick={openCreate}>Add expense</Button>}
       />
       {constantsLeft > 0 && (
@@ -167,6 +167,7 @@ function MonthlyExpensesPage() {
                 name: String(fd.get("name") || "").trim(),
                 category_id: (String(fd.get("category_id") || "") || null),
                 account_id: (String(fd.get("account_id") || "") || null),
+                due_day: String(fd.get("due_day") || "").trim() ? Number(fd.get("due_day")) : null,
                 default_amount: Number(fd.get("default_amount") || 0),
                 currency: String(fd.get("currency") || "USD"),
                 active: fd.get("active") === "on",
@@ -191,6 +192,9 @@ function MonthlyExpensesPage() {
                 <option value="">Not set</option>
                 {payingAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
               </Select>
+            </Field>
+            <Field label="Due day (optional)" hint="Day of the month it's due, 1 to 31">
+              <TextInput type="number" min="1" max="31" name="due_day" placeholder="e.g. 5" defaultValue={initial.due_day == null ? "" : String(initial.due_day)} />
             </Field>
             <Field label="Default amount">
               <TextInput type="number" step="0.01" name="default_amount" defaultValue={String(initial.default_amount ?? 0)} required />
@@ -224,7 +228,7 @@ function MonthlyExpensesPage() {
         </EmptyState>
       ) : (
         <Table head={<>
-          <Th>Name</Th><Th>Category</Th><Th>Paid from</Th><Th className="text-right">Default</Th>
+          <Th>Name</Th><Th>Category</Th><Th>Paid from</Th><Th>Due</Th><Th className="text-right">Default</Th>
           <Th>Window</Th><Th>Status</Th><Th></Th>
         </>}>
           {items.map((m) => (
@@ -232,6 +236,7 @@ function MonthlyExpensesPage() {
               <Td className="font-medium">{m.name}</Td>
               <Td>{catName(m.category_id)}</Td>
               <Td>{acctName(m.account_id) ?? <span className="text-muted-foreground">Not set</span>}</Td>
+              <Td className="tabular-nums">{m.due_day ?? <span className="text-muted-foreground">Not set</span>}</Td>
               <Td className="text-right tabular-nums">{money(m.default_amount, m.currency)}</Td>
               <Td className="text-xs text-muted-foreground">
                 {m.start_month?.slice(0, 7) ?? "—"} → {m.end_month?.slice(0, 7) ?? "∞"}

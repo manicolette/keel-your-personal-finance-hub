@@ -37,6 +37,7 @@ function SettingsPage() {
             id: settings.id,
             base_currency: String(fd.get("base_currency") || "USD"),
             week_start: String(fd.get("week_start") || "monday") as "sunday" | "monday",
+            start_month: String(fd.get("start_month") || settings.start_month),
           }});
         }}>
           <Field label="Base currency"><TextInput name="base_currency" defaultValue={settings.base_currency} /></Field>
@@ -45,6 +46,9 @@ function SettingsPage() {
               <option value="monday">Monday</option>
               <option value="sunday">Sunday</option>
             </Select>
+          </Field>
+          <Field label="Start month" hint="Keel tracks from this month on. Earlier months are hidden.">
+            <TextInput type="month" name="start_month" defaultValue={settings.start_month} />
           </Field>
           <div className="col-span-full flex justify-end">
             <Button type="submit" disabled={mUpdate.isPending}>Save</Button>

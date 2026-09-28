@@ -8,7 +8,7 @@ import { Button, Card, Field, TextInput } from "@/components/keel-ui";
 export const Route = createFileRoute("/unlock")({
   beforeLoad: async () => {
     const { unlocked } = await checkUnlocked();
-    if (unlocked) throw redirect({ to: "/dashboard" });
+    if (unlocked) throw redirect({ to: "/home" });
   },
   component: UnlockPage,
 });
@@ -26,7 +26,7 @@ function UnlockPage() {
     try {
       const res = await unlock({ data: { password } });
       if (res.ok) {
-        await router.navigate({ to: "/dashboard" });
+        await router.navigate({ to: "/home" });
       } else {
         toast.error("Incorrect password");
       }

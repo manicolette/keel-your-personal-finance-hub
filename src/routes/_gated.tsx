@@ -1,18 +1,14 @@
-import {
-  createFileRoute,
-  Link,
-  Outlet,
-  redirect,
-  useRouter,
-} from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, redirect, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import {
-  LayoutDashboard,
+  Home,
+  CalendarDays,
+  Plus,
+  BarChart3,
+  Menu,
   Wallet,
   Tags,
-  ArrowLeftRight,
   Repeat,
-  CreditCard,
   Target,
   TrendingUp,
   PieChart,
@@ -24,6 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { checkUnlocked, lockSite } from "@/lib/gate.functions";
+import { QuickAddProvider, useQuickAdd } from "@/components/quick-add";
 
 export const Route = createFileRoute("/_gated")({
   beforeLoad: async () => {
@@ -33,28 +30,36 @@ export const Route = createFileRoute("/_gated")({
   component: GatedLayout,
 });
 
-const nav = [
-  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/accounts", label: "Accounts", icon: Wallet },
-  { to: "/categories", label: "Categories", icon: Tags },
-  { to: "/transactions", label: "Transactions", icon: ArrowLeftRight },
+// Desktop sidebar. On phones the same pages live under More.
+const sideNav = [
+  { to: "/home", label: "Home", icon: Home },
+  { to: "/transactions", label: "Activity", icon: CalendarDays },
   { to: "/budget", label: "Budget", icon: PieChart },
-  { to: "/monthly-expenses", label: "Monthly Expenses", icon: ListChecks },
+  { to: "/monthly-expenses", label: "Bills", icon: ListChecks },
   { to: "/subscriptions", label: "Subscriptions", icon: Repeat },
   { to: "/income", label: "Income", icon: TrendingUp },
-  { to: "/debts", label: "Debts", icon: CreditCard },
+  { to: "/debts", label: "Debts", icon: BarChart3 },
   { to: "/goals", label: "Goals", icon: Target },
-  { to: "/networth", label: "Net Worth", icon: TrendingUp },
-  { to: "/fx", label: "FX Rates", icon: Globe },
+  { to: "/accounts", label: "Accounts", icon: Wallet },
+  { to: "/categories", label: "Categories", icon: Tags },
+  { to: "/networth", label: "Net worth", icon: TrendingUp },
   { to: "/reminders", label: "Reminders", icon: Bell },
+  { to: "/fx", label: "Currencies", icon: Globe },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;
 
-const bottomNav = nav.slice(0, 5);
-
 function GatedLayout() {
+  return (
+    <QuickAddProvider>
+      <Shell />
+    </QuickAddProvider>
+  );
+}
+
+function Shell() {
   const router = useRouter();
   const lock = useServerFn(lockSite);
+  const quickAdd = useQuickAdd();
 
   async function onLock() {
     try {
@@ -69,72 +74,75 @@ function GatedLayout() {
     <div className="min-h-screen bg-background text-foreground">
       <div className="mx-auto flex max-w-7xl">
         {/* Sidebar (desktop) */}
-        <aside className="sticky top-0 hidden h-screen w-56 shrink-0 border-r border-border bg-card px-3 py-5 md:block">
-          <div className="mb-5 flex items-center gap-2 px-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground text-sm font-bold">
-              K
-            </div>
-            <span className="text-lg font-semibold tracking-tight">Keel</span>
-          </div>
-          <nav className="flex flex-col gap-0.5">
-            {nav.map((item) => (
+        <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-border bg-card px-3 py-5 md:flex">
+          <div className="mb-4 px-2 font-display text-[28px] font-semibold text-primary">keel</div>
+          <button
+            onClick={() => quickAdd.open()}
+            className="mb-4 flex h-11 items-center justify-center gap-2 rounded-full bg-primary px-4 text-sm font-bold text-primary-foreground"
+          >
+            <Plus size={18} strokeWidth={2.4} /> Log spending
+          </button>
+          <nav className="flex flex-col gap-0.5 overflow-y-auto">
+            {sideNav.map((item) => (
               <Link
                 key={item.to}
                 to={item.to}
-                activeProps={{ className: "bg-accent text-accent-foreground font-medium" }}
-                className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-foreground hover:bg-muted"
+                activeProps={{ className: "bg-accent text-accent-foreground font-semibold" }}
+                className="flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm text-foreground hover:bg-muted"
               >
-                <item.icon size={16} />
+                <item.icon size={17} />
                 {item.label}
               </Link>
             ))}
           </nav>
           <button
             onClick={onLock}
-            className="mt-6 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted"
+            className="mt-auto flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
           >
-            <Lock size={16} /> Lock
+            <Lock size={16} /> Lock Keel
           </button>
         </aside>
 
-        {/* Main */}
-        <main className="min-w-0 flex-1 px-4 pb-24 pt-4 md:px-8 md:py-6">
-          {/* Mobile header */}
-          <div className="mb-4 flex items-center justify-between md:hidden">
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground text-sm font-bold">
-                K
-              </div>
-              <span className="text-lg font-semibold tracking-tight">Keel</span>
-            </div>
-            <button
-              onClick={onLock}
-              className="rounded-md p-2 text-muted-foreground hover:bg-muted"
-              aria-label="Lock"
-            >
-              <Lock size={18} />
-            </button>
-          </div>
+        <main className="min-w-0 flex-1 px-4 pb-28 pt-5 md:px-8 md:py-6">
           <Outlet />
         </main>
       </div>
 
-      {/* Bottom nav (mobile) */}
-      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card/95 backdrop-blur md:hidden">
-        <div className="mx-auto grid max-w-md grid-cols-5">
-          {bottomNav.map((item) => (
-            <Link
-              key={item.to}
-              to={item.to}
-              activeProps={{ className: "text-primary" }}
-              className="flex flex-col items-center gap-0.5 px-2 py-2 text-[11px] text-muted-foreground"
+      {/* Bottom nav (phone) */}
+      <nav
+        aria-label="Main"
+        className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
+      >
+        <div className="mx-auto grid h-[68px] max-w-md grid-cols-5 items-center">
+          <TabLink to="/home" label="Home" icon={Home} />
+          <TabLink to="/transactions" label="Activity" icon={CalendarDays} />
+          <div className="flex justify-center">
+            <button
+              onClick={() => quickAdd.open()}
+              aria-label="Log spending"
+              className="flex h-[52px] w-[52px] items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md"
             >
-              <item.icon size={20} />
-              {item.label}
-            </Link>
-          ))}
+              <Plus size={24} strokeWidth={2.4} />
+            </button>
+          </div>
+          <TabLink to="/debts" label="Debts" icon={BarChart3} />
+          <TabLink to="/more" label="More" icon={Menu} />
         </div>
       </nav>
     </div>
+  );
+}
+
+function TabLink({ to, label, icon: Icon }: { to: string; label: string; icon: typeof Home }) {
+  return (
+    <Link
+      to={to}
+      activeProps={{ className: "text-primary" }}
+      inactiveProps={{ className: "text-muted-foreground" }}
+      className="flex flex-col items-center gap-1 text-[11px] font-semibold"
+    >
+      <Icon size={22} />
+      {label}
+    </Link>
   );
 }

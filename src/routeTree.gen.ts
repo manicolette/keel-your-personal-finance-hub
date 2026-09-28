@@ -18,8 +18,10 @@ import { Route as GatedSubscriptionsRouteImport } from './routes/_gated.subscrip
 import { Route as GatedSettingsRouteImport } from './routes/_gated.settings'
 import { Route as GatedRemindersRouteImport } from './routes/_gated.reminders'
 import { Route as GatedNetworthRouteImport } from './routes/_gated.networth'
+import { Route as GatedMoreRouteImport } from './routes/_gated.more'
 import { Route as GatedMonthlyExpensesRouteImport } from './routes/_gated.monthly-expenses'
 import { Route as GatedIncomeRouteImport } from './routes/_gated.income'
+import { Route as GatedHomeRouteImport } from './routes/_gated.home'
 import { Route as GatedGoalsRouteImport } from './routes/_gated.goals'
 import { Route as GatedFxRouteImport } from './routes/_gated.fx'
 import { Route as GatedDebtsRouteImport } from './routes/_gated.debts'
@@ -73,6 +75,11 @@ const GatedNetworthRoute = GatedNetworthRouteImport.update({
   path: '/networth',
   getParentRoute: () => GatedRoute,
 } as any)
+const GatedMoreRoute = GatedMoreRouteImport.update({
+  id: '/more',
+  path: '/more',
+  getParentRoute: () => GatedRoute,
+} as any)
 const GatedMonthlyExpensesRoute = GatedMonthlyExpensesRouteImport.update({
   id: '/monthly-expenses',
   path: '/monthly-expenses',
@@ -81,6 +88,11 @@ const GatedMonthlyExpensesRoute = GatedMonthlyExpensesRouteImport.update({
 const GatedIncomeRoute = GatedIncomeRouteImport.update({
   id: '/income',
   path: '/income',
+  getParentRoute: () => GatedRoute,
+} as any)
+const GatedHomeRoute = GatedHomeRouteImport.update({
+  id: '/home',
+  path: '/home',
   getParentRoute: () => GatedRoute,
 } as any)
 const GatedGoalsRoute = GatedGoalsRouteImport.update({
@@ -135,8 +147,10 @@ export interface FileRoutesByFullPath {
   '/debts': typeof GatedDebtsRoute
   '/fx': typeof GatedFxRoute
   '/goals': typeof GatedGoalsRoute
+  '/home': typeof GatedHomeRoute
   '/income': typeof GatedIncomeRoute
   '/monthly-expenses': typeof GatedMonthlyExpensesRoute
+  '/more': typeof GatedMoreRoute
   '/networth': typeof GatedNetworthRoute
   '/reminders': typeof GatedRemindersRoute
   '/settings': typeof GatedSettingsRoute
@@ -155,8 +169,10 @@ export interface FileRoutesByTo {
   '/debts': typeof GatedDebtsRoute
   '/fx': typeof GatedFxRoute
   '/goals': typeof GatedGoalsRoute
+  '/home': typeof GatedHomeRoute
   '/income': typeof GatedIncomeRoute
   '/monthly-expenses': typeof GatedMonthlyExpensesRoute
+  '/more': typeof GatedMoreRoute
   '/networth': typeof GatedNetworthRoute
   '/reminders': typeof GatedRemindersRoute
   '/settings': typeof GatedSettingsRoute
@@ -177,8 +193,10 @@ export interface FileRoutesById {
   '/_gated/debts': typeof GatedDebtsRoute
   '/_gated/fx': typeof GatedFxRoute
   '/_gated/goals': typeof GatedGoalsRoute
+  '/_gated/home': typeof GatedHomeRoute
   '/_gated/income': typeof GatedIncomeRoute
   '/_gated/monthly-expenses': typeof GatedMonthlyExpensesRoute
+  '/_gated/more': typeof GatedMoreRoute
   '/_gated/networth': typeof GatedNetworthRoute
   '/_gated/reminders': typeof GatedRemindersRoute
   '/_gated/settings': typeof GatedSettingsRoute
@@ -199,8 +217,10 @@ export interface FileRouteTypes {
     | '/debts'
     | '/fx'
     | '/goals'
+    | '/home'
     | '/income'
     | '/monthly-expenses'
+    | '/more'
     | '/networth'
     | '/reminders'
     | '/settings'
@@ -219,8 +239,10 @@ export interface FileRouteTypes {
     | '/debts'
     | '/fx'
     | '/goals'
+    | '/home'
     | '/income'
     | '/monthly-expenses'
+    | '/more'
     | '/networth'
     | '/reminders'
     | '/settings'
@@ -240,8 +262,10 @@ export interface FileRouteTypes {
     | '/_gated/debts'
     | '/_gated/fx'
     | '/_gated/goals'
+    | '/_gated/home'
     | '/_gated/income'
     | '/_gated/monthly-expenses'
+    | '/_gated/more'
     | '/_gated/networth'
     | '/_gated/reminders'
     | '/_gated/settings'
@@ -322,6 +346,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GatedNetworthRouteImport
       parentRoute: typeof GatedRoute
     }
+    '/_gated/more': {
+      id: '/_gated/more'
+      path: '/more'
+      fullPath: '/more'
+      preLoaderRoute: typeof GatedMoreRouteImport
+      parentRoute: typeof GatedRoute
+    }
     '/_gated/monthly-expenses': {
       id: '/_gated/monthly-expenses'
       path: '/monthly-expenses'
@@ -334,6 +365,13 @@ declare module '@tanstack/react-router' {
       path: '/income'
       fullPath: '/income'
       preLoaderRoute: typeof GatedIncomeRouteImport
+      parentRoute: typeof GatedRoute
+    }
+    '/_gated/home': {
+      id: '/_gated/home'
+      path: '/home'
+      fullPath: '/home'
+      preLoaderRoute: typeof GatedHomeRouteImport
       parentRoute: typeof GatedRoute
     }
     '/_gated/goals': {
@@ -404,8 +442,10 @@ interface GatedRouteChildren {
   GatedDebtsRoute: typeof GatedDebtsRoute
   GatedFxRoute: typeof GatedFxRoute
   GatedGoalsRoute: typeof GatedGoalsRoute
+  GatedHomeRoute: typeof GatedHomeRoute
   GatedIncomeRoute: typeof GatedIncomeRoute
   GatedMonthlyExpensesRoute: typeof GatedMonthlyExpensesRoute
+  GatedMoreRoute: typeof GatedMoreRoute
   GatedNetworthRoute: typeof GatedNetworthRoute
   GatedRemindersRoute: typeof GatedRemindersRoute
   GatedSettingsRoute: typeof GatedSettingsRoute
@@ -422,8 +462,10 @@ const GatedRouteChildren: GatedRouteChildren = {
   GatedDebtsRoute: GatedDebtsRoute,
   GatedFxRoute: GatedFxRoute,
   GatedGoalsRoute: GatedGoalsRoute,
+  GatedHomeRoute: GatedHomeRoute,
   GatedIncomeRoute: GatedIncomeRoute,
   GatedMonthlyExpensesRoute: GatedMonthlyExpensesRoute,
+  GatedMoreRoute: GatedMoreRoute,
   GatedNetworthRoute: GatedNetworthRoute,
   GatedRemindersRoute: GatedRemindersRoute,
   GatedSettingsRoute: GatedSettingsRoute,

@@ -311,6 +311,14 @@ ALTER TABLE categories ADD COLUMN IF NOT EXISTS icon text;
 -- where a constant went ("monthly_expenses:<id>", "subscriptions:<id>", "recurring_income:<id>").
 ALTER TABLE constant_items ADD COLUMN IF NOT EXISTS moved_to text;
 ALTER TABLE constant_items ADD COLUMN IF NOT EXISTS moved_at timestamptz;
+
+-- Additive: the day of the month a bill is due (for Home, the calendar and reminders).
+ALTER TABLE monthly_expenses ADD COLUMN IF NOT EXISTS due_day int CHECK (due_day BETWEEN 1 AND 31);
+
+-- Additive: the first month Keel tracks. Months before it are not shown. Set once to October 2026;
+-- only fills an empty value, so a start month changed later in Settings is kept.
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS start_month date;
+UPDATE app_settings SET start_month = '2026-10-01' WHERE start_month IS NULL;
 `;
 
 export function ensureSchema(): Promise<void> {

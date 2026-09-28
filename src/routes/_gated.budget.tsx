@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { zodValidator, fallback } from "@tanstack/zod-adapter";
@@ -9,6 +9,7 @@ import {
   createAdHocInstance,
   deleteInstance,
   getBudget,
+  getSettings,
   listAccounts,
   listCategories,
   payExpenseDirect,
@@ -33,6 +34,7 @@ const budgetQueryOptions = (month: string) =>
 
 const catsQueryOptions = queryOptions({ queryKey: ["categories"], queryFn: () => listCategories() });
 const acctsQueryOptions = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
+const settingsQueryOptions = queryOptions({ queryKey: ["settings"], queryFn: () => getSettings() });
 
 
 // Local month, matching the Monthly Expenses and Subscriptions pages (UTC would flip to next month on evenings at month end).
@@ -54,6 +56,9 @@ export const Route = createFileRoute("/_gated/budget")({
   validateSearch: zodValidator(searchSchema),
   loaderDeps: ({ search }) => ({ month: search.month }),
   loader: async ({ context, deps }) => {
+    // Months before Keel's start month are never shown.
+    const settings = await context.queryClient.ensureQueryData(settingsQueryOptions);
+    if (deps.month < settings.start_month) throw redirect({ to: "/budget", search: { month: settings.start_month } });
     await Promise.all([
       context.queryClient.ensureQueryData(budgetQueryOptions(deps.month)),
       context.queryClient.ensureQueryData(catsQueryOptions),
@@ -72,6 +77,9 @@ function BudgetPage() {
   const { data } = useSuspenseQuery(budgetQueryOptions(month));
   const { data: cats } = useSuspenseQuery(catsQueryOptions);
   const { data: accounts } = useSuspenseQuery(acctsQueryOptions);
+  const { data: settings } = useSuspenseQuery(settingsQueryOptions);
+  const startMonth = settings.start_month;
+  const thisMonth = currentMonth() < startMonth ? startMonth : currentMonth();
   const expenseCats = cats.filter((c) => c.kind === "expense" && !c.archived);
   const activeAccounts = accounts.filter((a) => !a.archived);
   const payingAccounts = activeAccounts.filter((a) => a.kind !== "credit");
@@ -105,25 +113,27 @@ function BudgetPage() {
               to="/budget"
               search={{ month: shiftMonth(month, -1) }}
               aria-label="Previous month"
-              className="inline-flex h-8 items-center justify-center rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-muted"
+              aria-disabled={month <= startMonth}
+              className="inline-flex h-11 items-center justify-center rounded-full border border-border bg-card px-3.5 text-sm font-medium hover:bg-muted aria-disabled:pointer-events-none aria-disabled:opacity-40"
             >←</Link>
             <TextInput
               type="month"
               value={month}
-              onChange={(e) => go(e.target.value || currentMonth())}
+              min={startMonth}
+              onChange={(e) => go(e.target.value && e.target.value >= startMonth ? e.target.value : startMonth)}
               className="w-40"
             />
             <Link
               to="/budget"
               search={{ month: shiftMonth(month, 1) }}
               aria-label="Next month"
-              className="inline-flex h-8 items-center justify-center rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-muted"
+              className="inline-flex h-11 items-center justify-center rounded-full border border-border bg-card px-3.5 text-sm font-medium hover:bg-muted"
             >→</Link>
             <Link
               to="/budget"
-              search={{ month: currentMonth() }}
-              aria-disabled={month === currentMonth()}
-              className="inline-flex h-8 items-center justify-center rounded-md px-2.5 text-xs font-medium text-foreground hover:bg-muted aria-disabled:pointer-events-none aria-disabled:opacity-50"
+              search={{ month: thisMonth }}
+              aria-disabled={month === thisMonth}
+              className="inline-flex h-11 items-center justify-center rounded-md px-2.5 text-xs font-medium text-foreground hover:bg-muted aria-disabled:pointer-events-none aria-disabled:opacity-50"
             >Today</Link>
           </div>
         }
@@ -157,7 +167,7 @@ function BudgetPage() {
           <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Bills still due, by account</div>
           <ul className="divide-y divide-border">
             {coverage.map(({ account, due, short }) => (
-              <li key={account.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm">
+              <li key={account.id} className="flex flex-col gap-0.5 py-2 text-sm sm:flex-row sm:items-center sm:gap-3">
                 <span className="min-w-0 flex-1 font-medium">{account.name}</span>
                 <span className="tabular-nums text-muted-foreground">{money(due, account.currency)} due · {money(account.current_balance, account.currency)} in account</span>
                 {short > 0 ? (
