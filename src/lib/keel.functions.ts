@@ -1908,7 +1908,9 @@ export const getBudget = createServerFn({ method: "GET" })
     const monthOverride = new Map<string, number>();
     for (const r of lines) {
       const items = itemsByLine.get(r.id) ?? [];
-      monthOverride.set(r.category_id, items.length > 0 ? items.reduce((acc, i) => acc + i.amount, 0) : n(r.planned));
+      // A typed limit (planned > 0) wins; an older itemized plan with no typed amount uses its items' sum.
+      const typed = n(r.planned);
+      monthOverride.set(r.category_id, typed === 0 && items.length > 0 ? items.reduce((acc, i) => acc + i.amount, 0) : typed);
     }
     for (const cat of allCatsRows) {
       const def = cat.monthly_limit == null ? null : n(cat.monthly_limit);
@@ -2004,13 +2006,19 @@ export const setMonthLimit = createServerFn({ method: "POST" })
       ON CONFLICT (month) DO UPDATE SET month = EXCLUDED.month
       RETURNING id`) as any[];
     const monthId = m[0].id as string;
+    // Never deletes data that existed before limits: a plan row that has a sub-item breakdown
+    // (from an older version of Keel) is left in place on reset, and its items are never removed.
     if (data.limit == null) {
-      await sql`DELETE FROM budget_lines WHERE month_id = ${monthId} AND category_id = ${data.category_id}`;
+      const del = (await sql`
+        DELETE FROM budget_lines bl
+        WHERE bl.month_id = ${monthId} AND bl.category_id = ${data.category_id}
+          AND NOT EXISTS (SELECT 1 FROM budget_line_items i WHERE i.budget_line_id = bl.id)
+        RETURNING bl.id`) as any[];
+      const remaining = (await sql`SELECT 1 FROM budget_lines WHERE month_id = ${monthId} AND category_id = ${data.category_id}`) as any[];
+      if (del.length === 0 && remaining.length > 0) {
+        throw new Error("This month has an older itemized plan for this category, so it can't be reset. Type a new limit instead.");
+      }
     } else {
-      // A typed limit replaces any old sub-item breakdown for that line.
-      await sql`
-        DELETE FROM budget_line_items WHERE budget_line_id IN (
-          SELECT id FROM budget_lines WHERE month_id = ${monthId} AND category_id = ${data.category_id})`;
       await sql`
         INSERT INTO budget_lines (month_id, category_id, planned)
         VALUES (${monthId}, ${data.category_id}, ${data.limit})
