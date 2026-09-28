@@ -1053,7 +1053,19 @@ async function loadIncome(sql: any, month: string) {
     const receivedTotal = instances
       .filter((i) => i.status === "received")
       .reduce((a, b) => a + (b.received_amount ?? 0), 0);
-    return { month: data.month, instances, expectedTotal, receivedTotal };
+    // Every income transaction this month, matched to an expected payment or not (Home uses the same figure).
+    const allRows = (await sql`
+      SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS n FROM transactions
+      WHERE kind = 'income' AND on_date >= ${monthIso}::date AND on_date <= ${monthEndIso}::date`) as any[];
+    const matchedIds = new Set(instances.map((i) => i.transaction_id).filter(Boolean));
+    const unmatchedRows = (await sql`
+      SELECT id FROM transactions
+      WHERE kind = 'income' AND on_date >= ${monthIso}::date AND on_date <= ${monthEndIso}::date`) as any[];
+    const unmatchedCount = unmatchedRows.filter((r) => !matchedIds.has(r.id)).length;
+    return {
+      month: data.month, instances, expectedTotal, receivedTotal,
+      receivedAll: n(allRows[0]?.total), unmatchedCount,
+    };
 }
 
 export const updateIncomeInstance = createServerFn({ method: "POST" })
@@ -2575,5 +2587,33 @@ export const getHome = createServerFn({ method: "GET" })
         count: debtRows.length,
       },
       reminders: reminderRows.map((r) => ({ id: r.id, title: r.title, due_date: d(r.due_date), amount: r.amount == null ? null : n(r.amount) })),
+    };
+  });
+
+// -------------------------- Plan the month --------------------------
+// The extra figures the Plan page needs beside the budget itself.
+export const getPlanExtras = createServerFn({ method: "GET" })
+  .inputValidator((data: unknown) => z.object({ month: z.string().regex(/^\d{4}-\d{2}$/) }).parse(data))
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    const income = await loadIncome(sql, data.month);
+    const [y, m] = data.month.split("-").map(Number);
+    const prev = new Date(Date.UTC(y, m - 2, 1));
+    const prevIso = `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, "0")}-01`;
+    const [debtRows, lastRows] = await Promise.all([
+      sql`SELECT COALESCE(SUM(extra_payment), 0) AS extra FROM debts WHERE paid_off_at IS NULL` as Promise<any[]>,
+      // Everyday spending last month per category: expenses not recorded as a bill payment.
+      sql`
+        SELECT t.category_id, COALESCE(SUM(t.amount), 0) AS total FROM transactions t
+        WHERE t.kind = 'expense' AND date_trunc('month', t.on_date) = ${prevIso}::date
+          AND NOT EXISTS (SELECT 1 FROM monthly_expense_instances i WHERE i.transaction_id = t.id)
+        GROUP BY t.category_id` as Promise<any[]>,
+    ]);
+    return {
+      income_expected: round2(income.expectedTotal),
+      debt_extra: round2(n(debtRows[0]?.extra)),
+      last_month: prevIso.slice(0, 7),
+      last_month_spent: Object.fromEntries(lastRows.filter((r) => r.category_id).map((r) => [r.category_id as string, round2(n(r.total))])) as Record<string, number>,
     };
   });

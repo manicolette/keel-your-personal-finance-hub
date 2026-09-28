@@ -27,7 +27,8 @@ import {
   type Schedule,
   type StrategyResult,
 } from "@/lib/payoff";
-import { Button, Card, EmptyState, Field, PageHeader, Select, Table, Td, TextInput, Textarea, Th, money } from "@/components/keel-ui";
+import { CreditCard } from "lucide-react";
+import { Button, Card, EmptyState, Field, Segmented, Select, Sheet, Table, Td, TextInput, Textarea, Th, money } from "@/components/keel-ui";
 
 const debtsQuery = queryOptions({ queryKey: ["debts"], queryFn: () => listDebts() });
 const acctQuery = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
@@ -97,16 +98,81 @@ function DebtsPage() {
 
   const active = debts.filter((d) => !d.paid_off_at);
   const paid = debts.filter((d) => d.paid_off_at);
+  const closeForm = () => { setShowForm(false); setEditing(null); };
+
+  // One plan drives the summary, the plan card and the "extra goes here first" badge.
+  const [strategy, setStrategy] = useState<"avalanche" | "snowball" | "minimums">("avalanche");
+  const [extra, setExtra] = useState<number>(() => debts.filter((d) => !d.paid_off_at).reduce((a, d) => a + d.extra_payment, 0));
+  const currency = active[0]?.currency ?? "USD";
+  const planInput = active.map((d) => ({ ...termsOf(d, 0), id: d.id, name: d.name }));
+  const planStart = firstPaymentMonth(null);
+  const plan = active.length > 0 ? simulateStrategy(planInput, strategy === "minimums" ? 0 : extra, strategy, planStart) : null;
+  const minimumsPlan = active.length > 0 ? simulateStrategy(planInput, 0, "minimums", planStart) : null;
+  const firstTarget = strategy !== "minimums" && extra > 0 ? plan?.order[0]?.id ?? null : null;
+  const totalOwed = active.reduce((a, d) => a + d.balance, 0);
+  const totalMin = active.reduce((a, d) => a + d.min_payment, 0);
 
   return (
-    <div className="space-y-5">
-      <PageHeader title="Debts"
-        subtitle="Balances accrue interest daily between payments. Projections use standard monthly amortization."
-        actions={!formOpen && <Button onClick={() => { setShowForm(true); setEditing(null); }}>Add debt</Button>} />
+    <div className="mx-auto flex max-w-2xl flex-col gap-5">
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-[28px]">Debts</h1>
+        <Button variant="outline" onClick={() => { setShowForm(true); setEditing(null); }}>Add debt</Button>
+      </div>
+
+      {active.length > 0 && plan && (
+        <section className="flex flex-col gap-3 rounded-3xl bg-foreground p-[18px] text-background">
+          <div className="flex items-baseline justify-between text-[13px] text-[#c9d1d6]">
+            <span className="font-semibold">Total owed</span>
+            <span className="text-xs">as of each debt's last statement or payment</span>
+          </div>
+          <div className="font-display text-[36px] font-semibold tabular-nums">{money(totalOwed, currency)}</div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-xl bg-[#2a3a45] p-2.5">
+              <div className="text-xs text-[#c9d1d6]">Paying each month</div>
+              <div className="font-bold tabular-nums">{money(totalMin + (strategy === "minimums" ? 0 : extra), currency)}</div>
+            </div>
+            <div className="rounded-xl bg-[#2a3a45] p-2.5">
+              <div className="text-xs text-[#c9d1d6]">Debt free by</div>
+              <div className="font-bold">{plan.neverPaysOff ? "Not at these payments" : fmtMonth(plan.debtFreeMonth)}</div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {active.length > 0 && plan && minimumsPlan && (
+        <PlanCard
+          strategy={strategy} setStrategy={setStrategy} extra={extra} setExtra={setExtra}
+          plan={plan} minimumsPlan={minimumsPlan} totalMin={totalMin} currency={currency}
+          mixedCurrency={active.some((d) => d.currency !== currency)}
+        />
+      )}
+
+      {active.length === 0 && paid.length === 0 ? <EmptyState>No debts tracked.</EmptyState> : (
+        <section className="flex flex-col gap-3">
+          {active.length > 0 && <h2 className="font-sans text-[17px] font-bold">Your debts</h2>}
+          {active.map((d) => (
+            <DebtRow key={d.id} debt={d} isTarget={d.id === firstTarget}
+              onEdit={() => { setEditing(d); setShowForm(false); }}
+              onDelete={() => confirm(`Delete ${d.name}?`) && mDelete.mutate({ data: { id: d.id } })} />
+          ))}
+        </section>
+      )}
+
+      {paid.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <button onClick={() => setShowPaid(!showPaid)} aria-expanded={showPaid}
+            className="self-start text-sm font-semibold text-muted-foreground hover:text-foreground">
+            {showPaid ? "Hide" : "Show"} paid off ({paid.length})
+          </button>
+          {showPaid && paid.map((d) => (
+            <DebtRow key={d.id} debt={d} isTarget={false} onEdit={() => { setEditing(d); setShowForm(false); }} onDelete={() => confirm(`Delete ${d.name}?`) && mDelete.mutate({ data: { id: d.id } })} />
+          ))}
+        </div>
+      )}
 
       {formOpen && (
-        <Card>
-          <form key={editing?.id ?? "new"} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={(e) => {
+        <Sheet title={editing ? `Edit ${editing.name}` : "Add debt"} onClose={closeForm} wide>
+          <form key={editing?.id ?? "new"} className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => {
             e.preventDefault();
             const fd = new FormData(e.currentTarget);
             const str = (k: string) => String(fd.get(k) || "").trim();
@@ -159,97 +225,74 @@ function DebtsPage() {
             <Field label="Start date (optional)">
               <TextInput type="date" name="start_date" defaultValue={initial.start_date ?? ""} />
             </Field>
-            <div className="sm:col-span-2 lg:col-span-3">
+            <div className="sm:col-span-2">
               <Field label="Notes"><Textarea name="notes" defaultValue={initial.notes ?? ""} /></Field>
             </div>
-            <div className="col-span-full flex justify-end gap-2 pt-1">
-              <Button variant="ghost" type="button" onClick={() => { setShowForm(false); setEditing(null); }}>Cancel</Button>
-              <Button type="submit" disabled={mCreate.isPending || mUpdate.isPending}>{editing ? "Save" : "Create"}</Button>
+            <div className="col-span-full flex flex-wrap justify-end gap-2 pt-1">
+              {editing && (
+                <Button variant="danger" className="mr-auto" onClick={() => {
+                  if (confirm(`Delete ${editing.name}?`)) { mDelete.mutate({ data: { id: editing.id } }); closeForm(); }
+                }}>Delete</Button>
+              )}
+              <Button variant="ghost" type="button" onClick={closeForm}>Cancel</Button>
+              <Button type="submit" disabled={mCreate.isPending || mUpdate.isPending}>Save</Button>
             </div>
           </form>
-        </Card>
+        </Sheet>
       )}
 
-      {active.length >= 2 && <StrategyCard debts={active} />}
-
-      {active.length === 0 && paid.length === 0 ? <EmptyState>No debts tracked.</EmptyState> : (
-        <div className="space-y-3">
-          {active.map((d) => <DebtRow key={d.id} debt={d} onEdit={() => { setEditing(d); setShowForm(false); }} onDelete={() => confirm(`Delete ${d.name}?`) && mDelete.mutate({ data: { id: d.id } })} />)}
-        </div>
-      )}
-
-      {paid.length > 0 && (
-        <div className="space-y-3">
-          <button
-            onClick={() => setShowPaid(!showPaid)}
-            className="text-sm font-medium text-muted-foreground hover:text-foreground"
-          >
-            {showPaid ? "▾" : "▸"} Paid off ({paid.length})
-          </button>
-          {showPaid && paid.map((d) => (
-            <DebtRow key={d.id} debt={d} onEdit={() => { setEditing(d); setShowForm(false); }} onDelete={() => confirm(`Delete ${d.name}?`) && mDelete.mutate({ data: { id: d.id } })} />
-          ))}
-        </div>
-      )}
     </div>
   );
 }
 
-function StrategyCard({ debts }: { debts: Debt[] }) {
-  const [extra, setExtra] = useState<number>(() => debts.reduce((s, d) => s + d.extra_payment, 0));
-  const currency = debts[0]?.currency ?? "USD";
-  const mixedCurrency = debts.some((d) => d.currency !== currency);
-  const start = firstPaymentMonth(null);
-  const input = debts.map((d) => ({ ...termsOf(d, 0), id: d.id, name: d.name }));
-  const results: StrategyResult[] = [
-    simulateStrategy(input, 0, "minimums", start),
-    simulateStrategy(input, extra, "avalanche", start),
-    simulateStrategy(input, extra, "snowball", start),
-  ];
-  const label = { minimums: "Minimums only", avalanche: "Avalanche (highest APR first)", snowball: "Snowball (smallest balance first)" };
-  const totalMin = debts.reduce((s, d) => s + d.min_payment, 0);
-  const best = results[1].totalInterest <= results[2].totalInterest ? "avalanche" : "snowball";
-
+function PlanCard({
+  strategy, setStrategy, extra, setExtra, plan, minimumsPlan, totalMin, currency, mixedCurrency,
+}: {
+  strategy: "avalanche" | "snowball" | "minimums"; setStrategy: (s: "avalanche" | "snowball" | "minimums") => void;
+  extra: number; setExtra: (n: number) => void; plan: StrategyResult; minimumsPlan: StrategyResult;
+  totalMin: number; currency: string; mixedCurrency: boolean;
+}) {
+  const blurb = {
+    avalanche: "Highest APR first. Every extra dollar goes to the costliest balance, which saves the most interest.",
+    snowball: "Smallest balance first. You clear whole debts sooner, which some people find more motivating.",
+    minimums: "Only the minimum on each debt, for comparison.",
+  }[strategy];
+  const saves = !plan.neverPaysOff && !minimumsPlan.neverPaysOff ? Math.max(0, minimumsPlan.totalInterest - plan.totalInterest) : null;
   return (
-    <Card>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold">Payoff strategy</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            Pays every minimum ({money(totalMin, currency)}/mo), then puts the extra amount, plus each paid-off debt's minimum, toward one debt at a time.
-          </p>
+    <section className="flex flex-col gap-2.5">
+      <h2 className="font-sans text-[17px] font-bold">Payoff plan</h2>
+      <Segmented label="Payoff plan" value={strategy} onChange={setStrategy}
+        options={[{ value: "avalanche", label: "Avalanche" }, { value: "snowball", label: "Snowball" }, { value: "minimums", label: "Minimums" }]} />
+      <Card className="flex flex-col gap-3">
+        <p className="text-[13px] text-muted-foreground">{blurb}</p>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <div className="flex flex-col"><span className="text-[11px] font-bold uppercase text-muted-foreground">Interest</span>
+            <span className="text-[15px] font-bold tabular-nums">{plan.neverPaysOff ? "Never ends" : money(plan.totalInterest, currency)}</span></div>
+          <div className="flex flex-col"><span className="text-[11px] font-bold uppercase text-muted-foreground">Done by</span>
+            <span className="text-[15px] font-bold">{plan.neverPaysOff ? "Never" : fmtMonth(plan.debtFreeMonth)}</span>
+            {!plan.neverPaysOff && <span className="text-[11px] text-muted-foreground">{fmtDuration(plan.months ?? 0)}</span>}</div>
+          <div className="flex flex-col"><span className="text-[11px] font-bold uppercase text-[color:var(--positive)]">Vs minimums</span>
+            <span className="text-[15px] font-bold tabular-nums text-[color:var(--positive)]">{strategy === "minimums" || saves == null ? "None" : `Save ${money(saves, currency)}`}</span></div>
         </div>
-        <label className="flex flex-col gap-1 text-xs">
-          <span className="font-medium">Extra per month</span>
-          <TextInput type="number" step="0.01" min={0} value={extra || ""} placeholder="0"
-            onChange={(e) => setExtra(Math.max(0, Number(e.target.value) || 0))} className="w-32" />
-        </label>
-      </div>
-      {mixedCurrency && <p className="mt-2 text-xs text-destructive">Your debts use different currencies, so these combined totals mix them.</p>}
-      <div className="mt-3">
-        <Table head={<><Th>Plan</Th><Th>Debt free</Th><Th className="text-right">Total interest</Th><Th>Payoff order</Th></>}>
-          {results.map((r) => (
-            <tr key={r.strategy} className={r.strategy === best && extra > 0 ? "bg-[color:var(--positive)]/5" : ""}>
-              <Td className="font-medium">{label[r.strategy]}</Td>
-              <Td className="tabular-nums">
-                {r.neverPaysOff ? <span className="text-destructive">Never at these payments</span>
-                  : `${fmtMonth(r.debtFreeMonth)} (${fmtDuration(r.months ?? 0)})`}
-              </Td>
-              <Td className="text-right tabular-nums">{r.neverPaysOff ? "—" : money(r.totalInterest, currency)}</Td>
-              <Td className="text-xs text-muted-foreground">
-                {r.order.map((o) => `${o.name} (${fmtMonth(o.payoffMonth)})`).join(" → ")}
-              </Td>
-            </tr>
-          ))}
-        </Table>
-      </div>
-      {extra > 0 && !results[1].neverPaysOff && !results[2].neverPaysOff && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          Avalanche saves {money(Math.max(0, results[2].totalInterest - results[1].totalInterest), currency)} in interest compared to snowball.
-          {!results[0].neverPaysOff && <> Either one saves {money(Math.max(0, results[0].totalInterest - Math.max(results[1].totalInterest, results[2].totalInterest)), currency)} or more compared to paying minimums only.</>}
-        </p>
-      )}
-    </Card>
+        {strategy !== "minimums" && (
+          <Field label="Extra each month, on top of minimums" hint={`Minimums add up to ${money(totalMin, currency)} a month.`}>
+            <TextInput type="number" inputMode="decimal" step="0.01" min={0} value={extra || ""} placeholder="0"
+              onChange={(e) => setExtra(Math.max(0, Number(e.target.value) || 0))} />
+          </Field>
+        )}
+        {plan.order.length > 1 && !plan.neverPaysOff && (
+          <ol className="flex flex-col gap-1 text-[13px]">
+            {plan.order.map((o, i) => (
+              <li key={o.id} className="flex justify-between gap-2">
+                <span className="truncate"><span className="font-bold text-muted-foreground">{i + 1}.</span> {o.name}</span>
+                <span className="shrink-0 text-muted-foreground">paid off {fmtMonth(o.payoffMonth)}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+        {mixedCurrency && <p className="text-xs text-destructive">Your debts use different currencies, so these combined totals mix them.</p>}
+      </Card>
+    </section>
   );
 }
 
@@ -271,7 +314,8 @@ function ProjectionLine({ label, sched, currency }: { label: string; sched: Sche
   );
 }
 
-function DebtRow({ debt, onEdit, onDelete }: { debt: Debt; onEdit: () => void; onDelete: () => void }) {
+function DebtRow({ debt, isTarget, onEdit, onDelete }: { debt: Debt; isTarget: boolean; onEdit: () => void; onDelete: () => void }) {
+  const [whatIf, setWhatIf] = useState(false);
   const [extra, setExtra] = useState<number>(debt.extra_payment);
   const [showPayments, setShowPayments] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
@@ -288,74 +332,61 @@ function DebtRow({ debt, onEdit, onDelete }: { debt: Debt; onEdit: () => void; o
   const canCompare = extra > 0 && !base.neverPaysOff && !sim.neverPaysOff;
 
   return (
-    <Card>
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <Card className={`flex flex-col gap-3 ${isTarget ? "border-2 border-primary" : ""}`}>
+      <div className="flex items-center gap-2.5">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] bg-[#e3e8ee] text-[#34495e]"><CreditCard size={19} /></span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="font-medium">{debt.name}</span>
-            {debt.paid_off_at && (
-              <span className="rounded-full bg-[color:var(--positive)]/15 px-2 py-0.5 text-[10px] font-medium text-[color:var(--positive)]">
-                PAID OFF {debt.paid_off_at}
-              </span>
-            )}
-            {promoActive && (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                {debt.promo_apr}% UNTIL {debt.promo_end_date}
-              </span>
-            )}
-          </div>
-          <div className="mt-1 text-xs text-muted-foreground">
-            {money(debt.balance, cur)} @ {debt.apr}% · min {money(debt.min_payment, cur)}
-            {debt.due_day ? ` · due day ${debt.due_day}` : ""}
-            {debt.balance_as_of ? ` · as of ${debt.balance_as_of}` : ""}
-          </div>
-          {accrued >= 0.01 && (
-            <div className="mt-0.5 text-xs text-muted-foreground">
-              About {money(accrued, cur)} interest has built up since then (payoff amount today ≈ {money(debt.balance + accrued, cur)}).
-            </div>
-          )}
-          {showProgress && (
-            <div className="mt-2">
-              <div className="mb-1 flex justify-between text-xs">
-                <span className="text-muted-foreground">
-                  {money(paidAmt, cur)} of {money(debt.original_balance ?? 0, cur)} paid ({pct}%)
-                </span>
-                {debt.start_date && <span className="text-muted-foreground">since {debt.start_date}</span>}
-              </div>
-              <div className="h-2 overflow-hidden rounded-full bg-muted">
-                <div className="h-full bg-[color:var(--positive)]" style={{ width: `${pct}%` }} />
-              </div>
-            </div>
-          )}
-          {!debt.paid_off_at && <div className="mt-2"><ProjectionLine label="Payoff at minimum" sched={base} currency={cur} /></div>}
+          <div className="truncate text-[15px] font-bold">{debt.name}</div>
+          {isTarget && <div className="text-xs font-bold text-primary">Extra payment goes here first</div>}
+          {debt.paid_off_at && <div className="text-xs font-bold text-[color:var(--positive)]">Paid off {debt.paid_off_at}</div>}
         </div>
-        <div className="flex gap-1">
-          <Button size="sm" variant="outline" onClick={() => setShowPayments(!showPayments)}>{showPayments ? "Hide" : "Payments"}</Button>
-          <Button size="sm" variant="outline" onClick={onEdit}>Edit</Button>
-          <Button size="sm" variant="danger" onClick={onDelete}>Delete</Button>
+        <span className="text-[17px] font-bold tabular-nums">{money(debt.balance, cur)}</span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        <span className="rounded-lg bg-[#fde2e4] px-2 py-1 text-xs font-semibold text-[#8c2a3f]">{debt.apr}% APR</span>
+        {promoActive && <span className="rounded-lg bg-[#dcefe3] px-2 py-1 text-xs font-semibold text-[#245a3a]">{debt.promo_apr}% promo until {debt.promo_end_date}</span>}
+        <span className="rounded-lg bg-muted px-2 py-1 text-xs font-semibold">Min {money(debt.min_payment, cur)}{debt.due_day ? ` · due the ${debt.due_day}${debt.due_day % 10 === 1 && debt.due_day !== 11 ? "st" : debt.due_day % 10 === 2 && debt.due_day !== 12 ? "nd" : debt.due_day % 10 === 3 && debt.due_day !== 13 ? "rd" : "th"}` : ""}</span>
+        {!debt.paid_off_at && !base.neverPaysOff && <span className="rounded-lg bg-muted px-2 py-1 text-xs font-semibold">At minimum: paid off {fmtMonth(base.payoffMonth)}</span>}
+      </div>
+      {debt.balance_as_of && (
+        <div className="text-xs text-muted-foreground">
+          Balance as of {debt.balance_as_of}.{accrued >= 0.01 && <> About {money(accrued, cur)} interest since then, so the payoff amount today is about {money(debt.balance + accrued, cur)}.</>}
         </div>
+      )}
+      {!debt.paid_off_at && base.neverPaysOff && <ProjectionLine label="At minimum" sched={base} currency={cur} />}
+      {showProgress && (
+        <div>
+          <div className="mb-1 flex justify-between text-xs text-muted-foreground">
+            <span>{money(paidAmt, cur)} of {money(debt.original_balance ?? 0, cur)} paid ({pct}%)</span>
+            {debt.start_date && <span>since {debt.start_date}</span>}
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full bg-[color:var(--positive)]" style={{ width: `${pct}%` }} /></div>
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant={isTarget ? "primary" : "outline"} onClick={() => setShowPayments(!showPayments)} aria-expanded={showPayments}>
+          {showPayments ? "Hide payments" : "Log payment"}
+        </Button>
+        <Button size="sm" variant="outline" onClick={onEdit}>Update statement</Button>
+        {!debt.paid_off_at && <Button size="sm" variant="ghost" onClick={() => setWhatIf(!whatIf)} aria-expanded={whatIf}>What if I pay more</Button>}
+        <Button size="sm" variant="ghost" onClick={onDelete} className="ml-auto text-[color:var(--negative)]">Delete</Button>
       </div>
 
-      {!debt.paid_off_at && (
-        <div className="mt-3 rounded-md border border-border bg-muted/40 p-3">
-          <div className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col gap-1 text-xs">
-              <span className="font-medium">Extra per month</span>
-              <TextInput type="number" step="0.01" min={0} value={extra || ""} placeholder="0"
-                onChange={(e) => setExtra(Math.max(0, Number(e.target.value) || 0))} className="w-32" />
-            </label>
-            <div className="flex-1 space-y-1">
-              <ProjectionLine label={`Paying ${money(debt.min_payment + extra, cur)}/mo`} sched={sim} currency={cur} />
-              {canCompare && (
-                <div className="text-xs text-[color:var(--positive)]">
-                  Saves {money(Math.max(0, base.totalInterest - sim.totalInterest), cur)} in interest and {fmtDuration(Math.max(0, (base.months ?? 0) - (sim.months ?? 0)))} compared to the minimum.
-                </div>
-              )}
+      {whatIf && !debt.paid_off_at && (
+        <div className="flex flex-col gap-2 rounded-2xl border border-border bg-background p-3">
+          <Field label="Extra per month on this debt">
+            <TextInput type="number" inputMode="decimal" step="0.01" min={0} value={extra || ""} placeholder="0"
+              onChange={(e) => setExtra(Math.max(0, Number(e.target.value) || 0))} />
+          </Field>
+          <ProjectionLine label={`Paying ${money(debt.min_payment + extra, cur)} a month`} sched={sim} currency={cur} />
+          {canCompare && (
+            <div className="text-xs font-semibold text-[color:var(--positive)]">
+              Saves {money(Math.max(0, base.totalInterest - sim.totalInterest), cur)} in interest and {fmtDuration(Math.max(0, (base.months ?? 0) - (sim.months ?? 0)))} compared with the minimum.
             </div>
-            <Button size="sm" variant="ghost" onClick={() => setShowSchedule(!showSchedule)}>
-              {showSchedule ? "Hide schedule" : "Show schedule"}
-            </Button>
-          </div>
+          )}
+          <Button size="sm" variant="ghost" className="self-start" onClick={() => setShowSchedule(!showSchedule)}>
+            {showSchedule ? "Hide month by month" : "Show month by month"}
+          </Button>
           {showSchedule && <ScheduleTable sched={sim} currency={cur} />}
         </div>
       )}
@@ -418,8 +449,8 @@ function PaymentsPanel({ debtId, debtName, debtCurrency }: { debtId: string; deb
     onError: (e: Error) => toast.error(e.message) });
 
   return (
-    <div className="mt-3 rounded-md border border-border bg-muted/20 p-3 space-y-3">
-      <form className="grid gap-2 sm:grid-cols-5" onSubmit={(e) => {
+    <div className="space-y-3 rounded-2xl border border-border bg-background p-3">
+      <form className="grid gap-2 sm:grid-cols-2" onSubmit={(e) => {
         e.preventDefault();
         const fd = new FormData(e.currentTarget);
         mCreate.mutate({ data: {
@@ -455,11 +486,11 @@ function PaymentsPanel({ debtId, debtName, debtCurrency }: { debtId: string; deb
         </label>
         <label className="flex flex-col gap-1 text-xs">
           <span>Note</span>
-          <div className="flex gap-1">
-            <TextInput name="note" placeholder="optional" />
-            <Button type="submit" size="sm" disabled={mCreate.isPending}>Log</Button>
-          </div>
+          <TextInput name="note" placeholder="optional" />
         </label>
+        <div className="flex items-end">
+          <Button type="submit" disabled={mCreate.isPending} className="w-full">Log payment</Button>
+        </div>
       </form>
 
       {payments.length === 0 ? (

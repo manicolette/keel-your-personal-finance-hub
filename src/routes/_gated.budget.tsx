@@ -9,6 +9,7 @@ import {
   createAdHocInstance,
   deleteInstance,
   getBudget,
+  getPlanExtras,
   getSettings,
   listAccounts,
   listCategories,
@@ -35,6 +36,8 @@ const budgetQueryOptions = (month: string) =>
 const catsQueryOptions = queryOptions({ queryKey: ["categories"], queryFn: () => listCategories() });
 const acctsQueryOptions = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
 const settingsQueryOptions = queryOptions({ queryKey: ["settings"], queryFn: () => getSettings() });
+const extrasQueryOptions = (month: string) => queryOptions({ queryKey: ["plan_extras", month] as const, queryFn: () => getPlanExtras({ data: { month } }) });
+const monthLabel = (m: string) => new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
 
 
 // Local month, matching the Monthly Expenses and Subscriptions pages (UTC would flip to next month on evenings at month end).
@@ -63,6 +66,7 @@ export const Route = createFileRoute("/_gated/budget")({
       context.queryClient.ensureQueryData(budgetQueryOptions(deps.month)),
       context.queryClient.ensureQueryData(catsQueryOptions),
       context.queryClient.ensureQueryData(acctsQueryOptions),
+      context.queryClient.ensureQueryData(extrasQueryOptions(deps.month)),
     ]);
 
   },
@@ -97,116 +101,107 @@ function BudgetPage() {
   const showCoverage = month >= currentMonth() && coverage.length > 0;
 
 
-  const plannedTotal = data.groups.reduce((s, g) => s + g.planned, 0);
-  const actualTotal = data.groups.reduce((s, g) => s + g.actual, 0);
+  const { data: extras } = useSuspenseQuery(extrasQueryOptions(month));
+  const billGroups = data.groups.filter((g) => g.instances.length > 0);
+  const limitGroups = data.groups.filter((g) => g.limit != null && g.category_id);
+  const billsPlanned = data.groups.reduce((a, g) => a + g.instances.filter((i) => i.status !== "paused" && i.status !== "skipped").reduce((x, i) => x + i.planned_amount, 0), 0);
+  const limitsPlanned = limitGroups.reduce((a, g) => a + (g.limit ?? 0), 0);
+  const leftToPlan = extras.income_expected - billsPlanned - limitsPlanned - extras.debt_extra;
   const paidCount = data.groups.reduce((s, g) => s + g.instances.filter((i) => i.status === "paid").length, 0);
   const pendingCount = data.groups.reduce((s, g) => s + g.instances.filter((i) => i.status === "pending").length, 0);
+  const noLimitCats = expenseCats.filter((c) => c.monthly_limit == null && !limitGroups.some((g) => g.category_id === c.id));
 
   return (
-    <div className="space-y-5">
-      <PageHeader
-        title="Budget"
-        subtitle="Bills and everyday spending limits for the month. Spending starts fresh each month."
-        actions={
-          <div className="flex items-center gap-2">
-            <Link
-              to="/budget"
-              search={{ month: shiftMonth(month, -1) }}
-              aria-label="Previous month"
-              aria-disabled={month <= startMonth}
-              className="inline-flex h-11 items-center justify-center rounded-full border border-border bg-card px-3.5 text-sm font-medium hover:bg-muted aria-disabled:pointer-events-none aria-disabled:opacity-40"
-            >←</Link>
-            <TextInput
-              type="month"
-              value={month}
-              min={startMonth}
-              onChange={(e) => go(e.target.value && e.target.value >= startMonth ? e.target.value : startMonth)}
-              className="w-40"
-            />
-            <Link
-              to="/budget"
-              search={{ month: shiftMonth(month, 1) }}
-              aria-label="Next month"
-              className="inline-flex h-11 items-center justify-center rounded-full border border-border bg-card px-3.5 text-sm font-medium hover:bg-muted"
-            >→</Link>
-            <Link
-              to="/budget"
-              search={{ month: thisMonth }}
-              aria-disabled={month === thisMonth}
-              className="inline-flex h-11 items-center justify-center rounded-md px-2.5 text-xs font-medium text-foreground hover:bg-muted aria-disabled:pointer-events-none aria-disabled:opacity-50"
-            >Today</Link>
-          </div>
-        }
-      />
-
-      <div className="grid gap-3 sm:grid-cols-4">
-        <Card>
-          <div className="text-xs uppercase tracking-wide text-muted-foreground">Planned</div>
-          <div className="mt-1 text-xl font-semibold tabular-nums">{money(plannedTotal)}</div>
-        </Card>
-        <Card>
-          <div className="text-xs uppercase tracking-wide text-muted-foreground">Actual</div>
-          <div className="mt-1 text-xl font-semibold tabular-nums">{money(actualTotal)}</div>
-        </Card>
-        <Card>
-          <div className="text-xs uppercase tracking-wide text-muted-foreground">Remaining</div>
-          <div className="mt-1 text-xl font-semibold tabular-nums">{money(plannedTotal - actualTotal)}</div>
-        </Card>
-        <Card>
-          <div className="text-xs uppercase tracking-wide text-muted-foreground">Status</div>
-          <div className="mt-1 text-sm font-medium tabular-nums">
-            <span className="text-[color:var(--positive)]">{paidCount} paid</span>
-            <span className="mx-1 text-muted-foreground">·</span>
-            <span>{pendingCount} pending</span>
-          </div>
-        </Card>
+    <div className="mx-auto flex max-w-2xl flex-col gap-5">
+      <h1 className="text-[28px]">Plan {monthLabel(month).split(" ")[0]}</h1>
+      <div className="flex items-center gap-2">
+        <Link to="/budget" search={{ month: shiftMonth(month, -1) }} aria-label="Previous month" aria-disabled={month <= startMonth}
+          className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-border bg-card aria-disabled:pointer-events-none aria-disabled:opacity-40">←</Link>
+        <TextInput type="month" value={month} min={startMonth} aria-label="Month"
+          onChange={(e) => go(e.target.value && e.target.value >= startMonth ? e.target.value : startMonth)} className="w-44" />
+        <Link to="/budget" search={{ month: shiftMonth(month, 1) }} aria-label="Next month"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-border bg-card">→</Link>
+        {month !== thisMonth && <Link to="/budget" search={{ month: thisMonth }} className="text-sm font-semibold text-primary">This month</Link>}
       </div>
+
+      <div className="flex gap-2.5 rounded-[18px] bg-accent p-3.5 text-accent-foreground">
+        <span aria-hidden className="text-lg leading-none">↻</span>
+        <p className="text-[13px]">
+          <span className="font-bold">Each month starts fresh.</span> Bills and spending limits carry over; leftover money and overspending don't.
+          Change anything below for {monthLabel(month)} only.
+        </p>
+      </div>
+
+      <Card className="flex flex-col gap-2.5 p-[18px]">
+        {[
+          ["Income expected", extras.income_expected, "text-[color:var(--positive)]", ""],
+          ["Bills and subscriptions", -billsPlanned, "", ""],
+          ["Spending limits", -limitsPlanned, "", ""],
+          ["Extra debt payments", -extras.debt_extra, "", ""],
+        ].map(([label, v, cls]) => (
+          <div key={label as string} className="flex justify-between text-sm">
+            <span className="text-muted-foreground">{label}</span>
+            <span className={`font-bold tabular-nums ${cls}`}>{(v as number) < 0 ? "−" : ""}{money(Math.abs(v as number))}</span>
+          </div>
+        ))}
+        <div className="h-px bg-muted" />
+        <div className="flex items-baseline justify-between">
+          <span className="text-[15px] font-bold">{leftToPlan >= 0 ? "Left to plan" : "Over by"}</span>
+          <span className={`font-display text-[28px] font-semibold tabular-nums ${leftToPlan >= 0 ? "text-primary" : "text-[color:var(--negative)]"}`}>{money(Math.abs(leftToPlan))}</span>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {extras.income_expected === 0
+            ? <>No income expected yet. Add a source on the <Link to="/income" className="font-semibold text-primary underline">Income</Link> page.</>
+            : leftToPlan >= 0 ? "Give it a job with a spending limit, or leave it as a buffer." : "Planned spending is more than the income you expect this month."}
+          {" "}{paidCount} bill{paidCount === 1 ? "" : "s"} paid, {pendingCount} still to pay.
+        </p>
+      </Card>
 
       {showCoverage && (
         <Card>
-          <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Bills still due, by account</div>
-          <ul className="divide-y divide-border">
+          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Bills still due, by account</div>
+          <ul className="divide-y divide-muted">
             {coverage.map(({ account, due, short }) => (
               <li key={account.id} className="flex flex-col gap-0.5 py-2 text-sm sm:flex-row sm:items-center sm:gap-3">
-                <span className="min-w-0 flex-1 font-medium">{account.name}</span>
+                <span className="min-w-0 flex-1 font-semibold">{account.name}</span>
                 <span className="tabular-nums text-muted-foreground">{money(due, account.currency)} due · {money(account.current_balance, account.currency)} in account</span>
-                {short > 0 ? (
-                  <span className="font-medium text-[color:var(--negative)]">{money(short, account.currency)} short</span>
-                ) : (
-                  <span className="font-medium text-[color:var(--positive)]">Covered</span>
-                )}
+                {short > 0 ? <span className="font-semibold text-[color:var(--negative)]">{money(short, account.currency)} short</span>
+                  : <span className="font-semibold text-[color:var(--positive)]">Covered</span>}
               </li>
             ))}
           </ul>
           {coverage.some((c) => c.short > 0) && (
-            <div className="mt-2 text-xs text-muted-foreground">
-              Move money with a transfer on the{" "}
-              <Link to="/transactions" className="font-medium text-primary underline">Transactions</Link> page.
-            </div>
+            <Link to="/transactions" search={{ view: "list", kind: "transfer" }} className="mt-2 inline-block text-sm font-semibold text-primary">Move money between accounts</Link>
           )}
         </Card>
       )}
 
-      <div className="rounded-md border border-dashed border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-        Manage recurring items on the{" "}
-        <Link to="/monthly-expenses" className="font-medium text-primary underline">Monthly Expenses</Link>{" "}
-        page — anything active there shows up here automatically. Use "Add one-off" below only for an unusual expense that isn't part of your normal monthly plan.
-      </div>
-
-      {data.groups.length === 0 ? (
-        <EmptyState>
-          No expenses budgeted for {month}. Add a recurring one on the{" "}
-          <Link to="/monthly-expenses" className="text-primary underline">Monthly Expenses</Link>{" "}
-          page, or add a one-off below.
-        </EmptyState>
-      ) : (
-        <div className="space-y-4">
-          {data.groups.map((g) => (
-            <GroupCard key={g.category_id ?? "null"} group={g} month={month} accounts={payingAccounts} />
-          ))}
+      <section className="flex flex-col gap-2.5">
+        <div className="flex items-baseline justify-between">
+          <h2 className="font-sans text-[17px] font-bold text-[#2d6a45]">Spending limits</h2>
+          {extras.last_month >= startMonth && <span className="text-xs text-muted-foreground">{monthLabel(extras.last_month).split(" ")[0]} spent in grey</span>}
         </div>
+        {limitGroups.length === 0 ? (
+          <EmptyState>No spending limits yet. Give everyday categories like groceries a monthly limit on the <Link to="/categories" className="font-semibold text-primary underline">Categories</Link> page.</EmptyState>
+        ) : (
+          limitGroups.map((g) => <LimitRow key={g.category_id} group={g} month={month} lastSpent={extras.last_month_spent[g.category_id!] ?? 0} lastLabel={extras.last_month >= startMonth ? monthLabel(extras.last_month).split(" ")[0] : ""} />)
+        )}
+        {noLimitCats.length > 0 && limitGroups.length > 0 && (
+          <p className="text-xs text-muted-foreground">Add limits to other categories on the <Link to="/categories" className="font-semibold text-primary underline">Categories</Link> page.</p>
+        )}
+      </section>
 
-      )}
+      <section className="flex flex-col gap-2.5">
+        <div className="flex items-baseline justify-between">
+          <h2 className="font-sans text-[17px] font-bold text-[#b24c2c]">Bills</h2>
+          <Link to="/monthly-expenses" className="text-sm font-semibold text-primary">Edit bills</Link>
+        </div>
+        {billGroups.length === 0 ? (
+          <EmptyState>No bills for {monthLabel(month)}. Add recurring ones on the <Link to="/monthly-expenses" className="font-semibold text-primary underline">Bills</Link> page, or a one-off below.</EmptyState>
+        ) : (
+          billGroups.map((g) => <GroupCard key={g.category_id ?? "null"} group={g} month={month} accounts={payingAccounts} />)
+        )}
+      </section>
 
       <AdHocForm month={month} expenseCats={expenseCats} accounts={payingAccounts} />
     </div>
@@ -229,31 +224,22 @@ function GroupCard({ group, month, accounts }: { group: BudgetGroup; month: stri
   const over = group.actual > group.planned && group.planned > 0;
 
   return (
-    <Card>
-      <div className="flex flex-wrap items-center gap-3">
-        <CategoryIcon icon={group.category_icon} color={group.category_color} size={28} />
-        <span className="font-medium">{group.category_name}</span>
-        <span className="text-xs text-muted-foreground">{group.instances.length} item{group.instances.length === 1 ? "" : "s"}</span>
-        <div className="ml-auto flex items-center gap-4">
-          <div className="text-right">
-            <div className="text-xs text-muted-foreground">Planned</div>
-            <div className="text-sm tabular-nums font-medium">{money(group.planned)}</div>
-          </div>
-          <div className="text-right">
-            <div className="text-xs text-muted-foreground">Actual</div>
-            <div className={`text-sm tabular-nums ${over ? "text-[color:var(--negative)]" : ""}`}>{money(group.actual)}</div>
-          </div>
-          <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
-            <div className={`h-full ${over ? "bg-[color:var(--negative)]" : "bg-primary"}`} style={{ width: `${Math.min(100, pct)}%` }} />
+    <Card className="p-0">
+      <div className="flex items-center gap-3 px-3.5 pt-3.5">
+        <CategoryIcon icon={group.category_icon} color={group.category_color} size={32} />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[15px] font-semibold">{group.category_name}</div>
+          <div className="text-xs text-muted-foreground tabular-nums">
+            {money(group.instances.filter((i) => i.status === "paid").reduce((x, i) => x + (i.transaction_amount ?? i.planned_amount), 0))} paid of {money(group.instances.filter((i) => i.status !== "paused" && i.status !== "skipped").reduce((x, i) => x + i.planned_amount, 0))}
           </div>
         </div>
+        <span className="text-xs text-muted-foreground">{group.instances.length} bill{group.instances.length === 1 ? "" : "s"}</span>
       </div>
-
-      {group.limit != null && group.category_id && <LimitRow group={group} month={month} />}
+      <div className="px-3.5 pt-2"><div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className={`h-full ${over ? "bg-[color:var(--negative)]" : "bg-primary"}`} style={{ width: `${Math.min(100, pct)}%` }} /></div></div>
 
       {group.instances.length > 0 && (
-        <ul className="mt-3 divide-y divide-border rounded-md border border-border bg-background">
-          {group.instances.map((inst) => (
+        <ul className="mt-2 divide-y divide-muted">
+          {[...group.instances].sort((x, y) => (x.due_day ?? 99) - (y.due_day ?? 99)).map((inst) => (
             <InstanceRow key={inst.id} inst={inst} month={month} accounts={accounts} />
           ))}
         </ul>
@@ -265,7 +251,7 @@ function GroupCard({ group, month, accounts }: { group: BudgetGroup; month: stri
 
 // Everyday spending against this month's limit. Bill payments in the same category are not
 // counted here; they already show on their own rows below.
-function LimitRow({ group, month }: { group: BudgetGroup; month: string }) {
+function LimitRow({ group, month, lastSpent, lastLabel }: { group: BudgetGroup; month: string; lastSpent: number; lastLabel: string }) {
   const invalidate = useInvalidateBudget(month);
   const setLimit = useServerFn(setMonthLimit);
   const mLimit = useMutation({ mutationFn: setLimit, onSuccess: invalidate, onError: (e: Error) => toast.error(e.message) });
@@ -276,10 +262,12 @@ function LimitRow({ group, month }: { group: BudgetGroup; month: string }) {
   const pct = limit > 0 ? Math.min(100, Math.round((spent / limit) * 100)) : spent > 0 ? 100 : 0;
 
   return (
-    <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
+    <div className="rounded-2xl border border-border bg-card px-3.5 py-3">
       <div className="flex flex-wrap items-center gap-3">
+        <CategoryIcon icon={group.category_icon} color={group.category_color} size={32} />
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium">Everyday spending</div>
+          <div className="text-sm font-semibold">{group.category_name}</div>
+          {lastLabel && <div className="text-xs text-muted-foreground tabular-nums">{money(lastSpent)} in {lastLabel}</div>}
           <div className={`text-xs tabular-nums ${left < 0 ? "font-medium text-[color:var(--negative)]" : "text-muted-foreground"}`}>
             {money(spent)} spent · {left < 0 ? `${money(-left)} over` : `${money(left)} left`}
           </div>
@@ -327,7 +315,8 @@ function StatusBadge({ status }: { status: MonthlyExpenseInstance["status"] }) {
     paused: "bg-slate-200 text-slate-700",
     skipped: "bg-slate-200 text-slate-700",
   };
-  return <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ${map[status]}`}>{status}</span>;
+  const label: Record<string, string> = { paid: "Paid", pending: "Upcoming", paused: "Paused", skipped: "Skipped" };
+  return <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${map[status]}`}>{label[status]}</span>;
 }
 
 function InstanceRow({ inst, month, accounts }: { inst: MonthlyExpenseInstance; month: string; accounts: PayAccount[] }) {
@@ -361,87 +350,60 @@ function InstanceRow({ inst, month, accounts }: { inst: MonthlyExpenseInstance; 
       .finally(() => setPayPending(false));
   };
 
+  const dueText = inst.due_day ? `due ${new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1, 1).toLocaleDateString("en-US", { month: "short" })} ${inst.due_day}` : null;
   return (
-    <li className="flex flex-col gap-1 px-3 py-2">
-      <div className="flex flex-wrap items-center gap-2">
+    <li className={`flex flex-col gap-2 px-3.5 py-3 ${inst.status === "paused" || inst.status === "skipped" ? "opacity-60" : ""}`}>
+      <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            {editingName ? (
-              <input
-                autoFocus
-                defaultValue={inst.name}
-                onBlur={(e) => {
-                  const name = e.target.value.trim();
-                  setEditingName(false);
-                  if (name && name !== inst.name) mUpdate.mutate({ data: { id: inst.id, name } });
-                }}
-                onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-                className="rounded border border-input bg-background px-1.5 py-0.5 text-sm"
-              />
-            ) : (
-              <button onClick={() => setEditingName(true)} className="text-sm font-medium hover:underline">
-                {inst.name}
-              </button>
-            )}
-            {inst.is_ad_hoc && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">ONE-OFF</span>}
-            {inst.subscription_id && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">SUBSCRIPTION</span>}
-            {inst.amount_overridden && <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-accent-foreground">CHANGED THIS MONTH</span>}
-            {inst.monthly_expense_id === null && !inst.subscription_id && !inst.is_ad_hoc && (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">ORPHANED</span>
-            )}
-            <StatusBadge status={inst.status} />
-          </div>
-          {inst.status !== "paid" && (
-            <div className="mt-0.5 text-xs text-muted-foreground">
-              {paysFrom ? <>From {paysFrom}{inst.account_overridden ? " (this month)" : ""}</> : "Paying account not set"}
-            </div>
-          )}
-          {inst.transaction_id && inst.transaction_amount != null && (
-            <div className="mt-0.5 text-xs text-muted-foreground">
-              Paid {money(inst.transaction_amount, inst.currency)} on {inst.transaction_date}
-              <button onClick={() => mUnlink.mutate({ data: { id: inst.id } })} className="ml-2 text-destructive hover:underline">unlink</button>
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <div className="text-right">
-            <div className="text-[10px] uppercase text-muted-foreground">This month</div>
-            <input
-              type="number"
-              step="0.01"
-              defaultValue={inst.planned_amount}
-              key={inst.planned_amount}
-              onBlur={(e) => {
-                const val = Number(e.target.value);
-                if (val !== inst.planned_amount) mUpdate.mutate({ data: { id: inst.id, planned_amount: val } });
-              }}
-              className="w-24 rounded-md border border-input bg-background px-2 py-1 text-right text-sm tabular-nums"
-              title="Override the planned amount for this month only"
-            />
-          </div>
-          {inst.status === "paid" ? (
-            <Button size="sm" variant="outline" onClick={() => setPayOpen((v) => !v)}>{payOpen ? "Close" : "Edit payment"}</Button>
+          {editingName ? (
+            <input autoFocus defaultValue={inst.name} aria-label="Bill name"
+              onBlur={(e) => { const name = e.target.value.trim(); setEditingName(false); if (name && name !== inst.name) mUpdate.mutate({ data: { id: inst.id, name } }); }}
+              onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+              className="h-9 w-full rounded-lg border border-input bg-background px-2 text-sm" />
           ) : (
-            inst.status === "paused" ? (
-              <>
-                <Button size="sm" variant="outline" onClick={() => mStatus.mutate({ data: { id: inst.id, status: "pending" } })}>Resume</Button>
-              </>
-            ) : (
-              <>
-                <Button size="sm" onClick={() => setPayOpen((v) => !v)}>{payOpen ? "Close" : "Mark paid"}</Button>
-                <Button size="sm" variant="ghost" onClick={() => mStatus.mutate({ data: { id: inst.id, status: "paused" } })}>Pause</Button>
-              </>
-            )
+            <button onClick={() => setEditingName(true)} className="text-left text-[15px] font-semibold hover:underline">{inst.name}</button>
           )}
-          {inst.is_ad_hoc && (
-            <Button size="sm" variant="danger" onClick={() => confirm(`Remove "${inst.name}"?`) && mDelete.mutate({ data: { id: inst.id } })}>×</Button>
+          <div className="text-xs text-muted-foreground">
+            {[dueText, paysFrom ? `from ${paysFrom}${inst.account_overridden ? " (this month)" : ""}` : "paying account not set"].filter(Boolean).join(" · ")}
+          </div>
+          {inst.transaction_id && inst.transaction_amount != null && (
+            <div className="text-xs text-[color:var(--positive)]">
+              Paid {money(inst.transaction_amount, inst.currency)} on {inst.transaction_date}
+              <button onClick={() => mUnlink.mutate({ data: { id: inst.id } })} className="ml-2 font-semibold text-muted-foreground underline">Unmatch</button>
+            </div>
           )}
+          <div className="mt-1 flex flex-wrap gap-1">
+            <StatusBadge status={inst.status} />
+            {inst.is_ad_hoc && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">One-off</span>}
+            {inst.subscription_id && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">Subscription</span>}
+            {inst.amount_overridden && <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-semibold uppercase text-accent-foreground">Changed this month</span>}
+          </div>
         </div>
+        <label className="flex shrink-0 flex-col items-end">
+          <span className="text-[10px] font-semibold uppercase text-muted-foreground">This month</span>
+          <input type="number" step="0.01" inputMode="decimal" defaultValue={inst.planned_amount} key={inst.planned_amount}
+            onBlur={(e) => { const val = Number(e.target.value); if (val !== inst.planned_amount) mUpdate.mutate({ data: { id: inst.id, planned_amount: val } }); }}
+            className="h-10 w-24 rounded-xl border border-input bg-background px-2 text-right text-sm font-semibold tabular-nums" />
+        </label>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {inst.status === "paid" ? (
+          <Button size="sm" variant="outline" onClick={() => setPayOpen((v) => !v)}>{payOpen ? "Close" : "Edit payment"}</Button>
+        ) : inst.status === "paused" || inst.status === "skipped" ? (
+          <Button size="sm" variant="outline" onClick={() => mStatus.mutate({ data: { id: inst.id, status: "pending" } })}>Undo skip</Button>
+        ) : (
+          <>
+            <Button size="sm" onClick={() => setPayOpen((v) => !v)}>{payOpen ? "Close" : "Mark paid"}</Button>
+            <Button size="sm" variant="ghost" onClick={() => mStatus.mutate({ data: { id: inst.id, status: "skipped" } })}>Skip this month</Button>
+          </>
+        )}
+        {inst.is_ad_hoc && (
+          <Button size="sm" variant="ghost" className="text-[color:var(--negative)]" onClick={() => confirm(`Remove "${inst.name}"?`) && mDelete.mutate({ data: { id: inst.id } })}>Remove</Button>
+        )}
       </div>
 
       {payOpen && (
-        <div className="mt-2 flex flex-wrap items-end gap-2 rounded-md border border-dashed border-border bg-muted/30 px-2 py-2">
+        <div className="grid gap-2 rounded-2xl border border-dashed border-border bg-background p-3 sm:grid-cols-2">
           <label className="flex flex-col gap-1 text-xs">
             <span className="font-medium">Amount paid</span>
             <TextInput type="number" step="0.01" value={payAmt} onChange={(e) => setPayAmt(e.target.value)} className="w-28" />

@@ -83,7 +83,7 @@ function QuickAddSheet({ initialText, onClose }: { initialText: string; onClose:
         },
       });
       toast.success(`Logged ${money(draft.amount!, account.currency)}${draft.description ? ` for ${draft.description}` : ""}`);
-      for (const k of ["transactions", "accounts", "home", "budget", "dashboard", "networth-live", "income"]) {
+      for (const k of ["transactions", "accounts", "home", "budget", "dashboard", "networth-live", "income_month", "month_instances"]) {
         qc.invalidateQueries({ queryKey: [k] });
       }
       onClose();

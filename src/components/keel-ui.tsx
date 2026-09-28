@@ -17,7 +17,7 @@ export function money(v: number | string | null | undefined, currency = "USD") {
 
 export function Card({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={clsx("rounded-xl border border-border bg-card p-4 shadow-sm", className)}>
+    <div className={clsx("rounded-[20px] border border-border bg-card p-4", className)}>
       {children}
     </div>
   );
@@ -55,12 +55,12 @@ export function Button({
   size?: "sm" | "md";
 }) {
   const base =
-    "inline-flex items-center justify-center rounded-md font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background";
-  const sizes = size === "sm" ? "px-2.5 py-1.5 text-xs" : "px-3.5 py-2 text-sm";
+    "inline-flex items-center justify-center gap-1.5 rounded-full font-semibold transition-colors disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background";
+  const sizes = size === "sm" ? "h-9 px-3 text-xs" : "h-11 px-4 text-sm";
   const variants: Record<string, string> = {
     primary: "bg-primary text-primary-foreground hover:opacity-90",
     ghost: "text-foreground hover:bg-muted",
-    outline: "border border-border bg-background hover:bg-muted",
+    outline: "border border-border bg-card hover:bg-muted",
     danger: "bg-destructive text-destructive-foreground hover:opacity-90",
   };
   return (
@@ -93,7 +93,7 @@ export function Field({
 }
 
 const inputBase =
-  "w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  "w-full min-h-11 rounded-xl border border-input bg-background px-3 py-2 text-base sm:text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 export function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={clsx(inputBase, props.className)} />;
@@ -119,7 +119,7 @@ export function Table({
   children: ReactNode;
 }) {
   return (
-    <div className="overflow-x-auto rounded-xl border border-border bg-card">
+    <div className="overflow-x-auto rounded-[20px] border border-border bg-card">
       <table className="w-full text-sm">
         <thead className="bg-muted text-left text-xs uppercase tracking-wide text-muted-foreground">
           <tr>{head}</tr>
@@ -139,7 +139,7 @@ export function Td({ children, className }: { children?: ReactNode; className?: 
 
 export function EmptyState({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+    <div className="rounded-[20px] border border-dashed border-border bg-card p-8 text-center text-sm text-muted-foreground">
       {children}
     </div>
   );
@@ -226,5 +226,52 @@ export function CategoryIcon({ icon, color, size = 32 }: { icon: string | null |
     >
       <Icon size={Math.round(size * 0.55)} strokeWidth={2} />
     </span>
+  );
+}
+
+/** Bottom sheet on phones, centered dialog on larger screens. */
+export function Sheet({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-[#1d2a33]/40 sm:items-center sm:p-6" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+        className={clsx(
+          "max-h-[92vh] w-full overflow-y-auto rounded-t-[28px] bg-background px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-3 shadow-xl sm:rounded-[28px]",
+          wide ? "sm:max-w-2xl" : "sm:max-w-md",
+        )}
+      >
+        <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-[#d0c8bb] sm:hidden" />
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h2 className="text-2xl">{title}</h2>
+          <button type="button" onClick={onClose} aria-label="Close" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-border bg-card text-lg">
+            ×
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Two or three way toggle, e.g. Calendar | List. */
+export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
+  return (
+    <div role="radiogroup" aria-label={label} className="inline-flex gap-1 rounded-full bg-secondary p-1">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={value === o.value}
+          onClick={() => onChange(o.value)}
+          className={clsx("h-9 rounded-full px-3.5 text-[13px]", value === o.value ? "bg-card font-bold shadow-sm" : "font-semibold text-muted-foreground")}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
   );
 }

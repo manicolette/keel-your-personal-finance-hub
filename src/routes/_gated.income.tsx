@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { zodValidator, fallback } from "@tanstack/zod-adapter";
@@ -9,6 +9,7 @@ import {
   createRecurringIncome,
   deleteRecurringIncome,
   getIncome,
+  getSettings,
   linkTransactionToIncome,
   listAccounts,
   listCategories,
@@ -20,21 +21,26 @@ import {
   updateRecurringIncome,
   type RecurringIncome,
 } from "@/lib/keel.functions";
-import { Button, Card, EmptyState, Field, PageHeader, Select, Table, Td, TextInput, Textarea, Th, money } from "@/components/keel-ui";
+import { Check, ChevronLeft, ChevronRight, Clock } from "lucide-react";
+import { Button, Card, EmptyState, Field, Select, Sheet, TextInput, Textarea, money } from "@/components/keel-ui";
 
 
 const incQuery = queryOptions({ queryKey: ["recurring_income"], queryFn: () => listRecurringIncome() });
 const acctQuery = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
 const catQuery = queryOptions({ queryKey: ["categories"], queryFn: () => listCategories() });
 const txQuery = queryOptions({ queryKey: ["transactions"], queryFn: () => listTransactions() });
+const settingsQuery = queryOptions({ queryKey: ["settings"], queryFn: () => getSettings() });
+const monthLabel = (m: string) => new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+const dayLabel = (iso: string) => new Date(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10))).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 
 const searchSchema = z.object({
   month: fallback(z.string().regex(/^\d{4}-\d{2}$/), "").default(""),
 });
 
+// Local month (not UTC), so evenings at month end don't jump ahead.
 const currentMonth = () => {
   const now = new Date();
-  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 };
 const shiftMonth = (m: string, delta: number) => {
   const [y, mm] = m.split("-").map(Number);
@@ -46,6 +52,8 @@ export const Route = createFileRoute("/_gated/income")({
   validateSearch: zodValidator(searchSchema),
   loaderDeps: ({ search: { month } }) => ({ month: month || currentMonth() }),
   loader: async ({ context, deps }) => {
+    const settings = await context.queryClient.ensureQueryData(settingsQuery);
+    if (deps.month < settings.start_month) throw redirect({ to: "/income", search: { month: settings.start_month } });
     await Promise.all([
       context.queryClient.ensureQueryData(incQuery),
       context.queryClient.ensureQueryData(acctQuery),
@@ -61,7 +69,7 @@ export const Route = createFileRoute("/_gated/income")({
   errorComponent: ({ error }) => <div role="alert" className="text-sm text-destructive">{error.message}</div>,
 });
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 
 function IncomePage() {
   const { data: sources } = useSuspenseQuery(incQuery);
@@ -69,7 +77,9 @@ function IncomePage() {
   const { data: cats } = useSuspenseQuery(catQuery);
   const { data: allTxs } = useSuspenseQuery(txQuery);
   const rawMonth = Route.useSearch().month;
+  const { data: settings } = useSuspenseQuery(settingsQuery);
   const month = rawMonth || currentMonth();
+  const thisMonth = currentMonth() < settings.start_month ? settings.start_month : currentMonth();
   const monthQ = useSuspenseQuery(
     queryOptions({ queryKey: ["income_month", month], queryFn: () => getIncome({ data: { month } }) }),
   );
@@ -167,18 +177,103 @@ function IncomePage() {
       .catch((e: Error) => toast.error(e.message));
   }
 
+  const closeForm = () => { setShowForm(false); setEditing(null); };
+  const received = monthData.receivedAll;
+  const expected = monthData.expectedTotal;
+  const pct = expected > 0 ? Math.min(100, Math.round((received / expected) * 100)) : 0;
+  const acctName = (id: string | null) => accts.find((a) => a.id === id)?.name ?? null;
+
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Income"
-        subtitle="Sources of income and each month's expected vs received."
-        actions={!formOpen && <Button onClick={openCreate}>Add income source</Button>}
-      />
+    <div className="mx-auto flex max-w-2xl flex-col gap-5">
+      <h1 className="text-[28px]">Income</h1>
+
+      <Card className="flex flex-col gap-3 p-[18px]">
+        <div className="flex items-center justify-between">
+          <button type="button" onClick={() => goMonth(shiftMonth(month, -1))} disabled={month <= settings.start_month} aria-label="Previous month"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-background disabled:opacity-30"><ChevronLeft size={18} /></button>
+          <div className="flex flex-col items-center">
+            <span className="text-[15px] font-bold">{monthLabel(month)}</span>
+            {month !== thisMonth && <button type="button" onClick={() => goMonth(thisMonth)} className="text-xs font-semibold text-primary">Back to {monthLabel(thisMonth)}</button>}
+          </div>
+          <button type="button" onClick={() => goMonth(shiftMonth(month, 1))} aria-label="Next month"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-background"><ChevronRight size={18} /></button>
+        </div>
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className="font-display text-[34px] font-semibold tabular-nums text-[color:var(--positive)]">{money(received)}</span>
+          <span className="text-sm text-muted-foreground">of {money(expected)} received</span>
+        </div>
+        <div role="progressbar" aria-label="Share of expected income received" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} className="h-2.5 rounded-full bg-muted">
+          <div className="h-2.5 rounded-full bg-[#4e9a6b]" style={{ width: `${pct}%` }} />
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {[["Expected", money(expected), ""], ["Received", money(received), "text-[color:var(--positive)]"], ["Still coming", money(Math.max(0, expected - received)), ""]].map(([l, v, c]) => (
+            <div key={l} className="rounded-[14px] bg-background p-2.5"><div className="text-xs text-muted-foreground">{l}</div><div className={`text-[14px] font-bold tabular-nums ${c}`}>{v}</div></div>
+          ))}
+        </div>
+      </Card>
+
+      <section className="flex flex-col gap-2.5">
+        <h2 className="font-sans text-[17px] font-bold">This month</h2>
+        {monthData.unmatchedCount > 0 && (
+          <p className="rounded-2xl bg-accent px-3.5 py-2.5 text-[13px] text-accent-foreground">
+            {monthData.unmatchedCount === 1 ? "1 deposit this month isn't" : `${monthData.unmatchedCount} deposits this month aren't`} matched to an expected payment yet.
+            Use "Match a transaction" below so the right payment shows as received.
+          </p>
+        )}
+        {monthData.instances.length === 0 ? (
+          <EmptyState>No income expected in {monthLabel(month)}. Add a source below.</EmptyState>
+        ) : (
+          <ul className="divide-y divide-muted overflow-hidden rounded-[20px] border border-border bg-card">
+            {monthData.instances.map((i) => (
+              <IncomeInstanceRow
+                key={i.id}
+                inst={i}
+                accounts={accts.filter((a) => a.kind !== "credit")}
+                defaultAccountId={sources.find((src) => src.id === i.recurring_income_id)?.account_id ?? null}
+                monthTxOptions={monthTxOptions}
+                onLink={handleLink}
+                onUnlink={handleUnlink}
+                onSkip={handleSkip}
+                onUnskip={handleUnskip}
+                onInvalidate={invalidate}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="flex flex-col gap-2.5">
+        <div className="flex items-baseline justify-between">
+          <h2 className="font-sans text-[17px] font-bold">Sources</h2>
+          <span className="text-sm text-muted-foreground">repeat automatically</span>
+        </div>
+        {sources.length === 0 ? (
+          <EmptyState>No income sources yet. Add your stipend or paycheck so each month knows what to expect.</EmptyState>
+        ) : (
+          sources.map((src) => (
+            <button key={src.id} type="button" onClick={() => openEdit(src)}
+              className={`flex flex-col gap-2 rounded-2xl border border-border bg-card p-3.5 text-left ${src.active ? "" : "opacity-60"}`}>
+              <span className="flex items-center justify-between gap-2">
+                <span className="text-[15px] font-semibold">{src.name}</span>
+                <span className="text-[15px] font-bold tabular-nums">{src.is_variable || src.amount == null ? "Varies" : money(src.amount, src.currency)}</span>
+              </span>
+              <span className="flex flex-wrap gap-1.5">
+                <span className="rounded-lg bg-muted px-2 py-1 text-xs font-semibold">{scheduleSummary(src)}</span>
+                {src.is_variable && <span className="rounded-lg bg-[#fff0c9] px-2 py-1 text-xs font-semibold text-[#6e500e]">Amount varies</span>}
+                {acctName(src.account_id) && <span className="rounded-lg bg-[#e3e8ee] px-2 py-1 text-xs font-semibold text-[#34495e]">Into {acctName(src.account_id)}</span>}
+                {!src.active && <span className="rounded-lg bg-muted px-2 py-1 text-xs font-semibold">Paused</span>}
+              </span>
+            </button>
+          ))
+        )}
+        <Button onClick={openCreate} className="bg-foreground">Add income source</Button>
+      </section>
 
       {formOpen && (
-        <Card>
+        <Sheet title={editing ? "Edit income source" : "Add income source"} onClose={closeForm} wide>
           <form
-            className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+            key={editing?.id ?? "new"}
+            className="grid gap-3 sm:grid-cols-2"
             onSubmit={(e) => {
               e.preventDefault();
               const fd = new FormData(e.currentTarget);
@@ -277,99 +372,22 @@ function IncomePage() {
                 onChange={(e) => setIsVariable(e.target.checked)}
               /> Variable amount (freelance, tips, commission)
             </label>
-            <div className="sm:col-span-2 lg:col-span-3">
+            <div className="sm:col-span-2">
               <Field label="Notes"><Textarea name="notes" defaultValue={initial.notes ?? ""} /></Field>
             </div>
-            <div className="col-span-full flex justify-end gap-2 pt-1">
-              <Button variant="ghost" type="button" onClick={() => { setShowForm(false); setEditing(null); }}>Cancel</Button>
-              <Button type="submit" disabled={mCreate.isPending || mUpdate.isPending}>{editing ? "Save" : "Create"}</Button>
+            <div className="col-span-full flex flex-wrap justify-end gap-2 pt-1">
+              {editing && (
+                <Button variant="danger" className="mr-auto" onClick={() => {
+                  if (confirm(`Delete ${editing.name}? Past months keep their history.`)) { mDelete.mutate({ data: { id: editing.id } }); closeForm(); }
+                }}>Delete</Button>
+              )}
+              <Button variant="ghost" type="button" onClick={closeForm}>Cancel</Button>
+              <Button type="submit" disabled={mCreate.isPending || mUpdate.isPending}>Save</Button>
             </div>
           </form>
-        </Card>
+        </Sheet>
       )}
 
-      {/* Sources list */}
-      <section>
-        <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Income sources</h2>
-        {sources.length === 0 ? (
-          <EmptyState>No income sources yet. Add one to start projecting monthly income.</EmptyState>
-        ) : (
-          <Table head={<><Th>Name</Th><Th>Frequency</Th><Th>Schedule</Th><Th className="text-right">Amount</Th><Th></Th></>}>
-            {sources.map((s) => (
-              <tr key={s.id} className={s.active ? "" : "opacity-60"}>
-                <Td className="font-medium">
-                  {s.name}
-                  {s.is_variable && <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide">variable</span>}
-                </Td>
-                <Td className="capitalize">{labelForFrequency(s.frequency)}</Td>
-                <Td className="text-xs text-muted-foreground">{scheduleSummary(s)}</Td>
-                <Td className="text-right tabular-nums text-[color:var(--positive)]">
-                  {s.is_variable || s.amount == null ? "—" : money(s.amount, s.currency)}
-                </Td>
-                <Td className="text-right">
-                  <div className="flex justify-end gap-1">
-                    <Button size="sm" variant="outline" onClick={() => openEdit(s)}>Edit</Button>
-                    <Button size="sm" variant="danger" onClick={() => confirm(`Delete ${s.name}? Historical income instances will remain.`) && mDelete.mutate({ data: { id: s.id } })}>Delete</Button>
-                  </div>
-                </Td>
-              </tr>
-            ))}
-          </Table>
-        )}
-      </section>
-
-      {/* Monthly instances */}
-      <section className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-sm font-semibold text-muted-foreground">This month</h2>
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={() => goMonth(shiftMonth(month, -1))}>← Prev</Button>
-            <div className="min-w-24 text-center text-sm font-medium tabular-nums">{month}</div>
-            <Button size="sm" variant="outline" onClick={() => goMonth(shiftMonth(month, +1))}>Next →</Button>
-            <Button size="sm" variant="ghost" onClick={() => goMonth(currentMonth())}>Today</Button>
-          </div>
-        </div>
-
-        <Card>
-          <div className="flex flex-wrap gap-6 text-sm">
-            <div>
-              <div className="text-xs uppercase tracking-wide text-muted-foreground">Expected</div>
-              <div className="mt-0.5 text-lg font-semibold tabular-nums">{money(monthData.expectedTotal)}</div>
-            </div>
-            <div>
-              <div className="text-xs uppercase tracking-wide text-muted-foreground">Received</div>
-              <div className="mt-0.5 text-lg font-semibold tabular-nums text-[color:var(--positive)]">{money(monthData.receivedTotal)}</div>
-            </div>
-            <div>
-              <div className="text-xs uppercase tracking-wide text-muted-foreground">Outstanding</div>
-              <div className="mt-0.5 text-lg font-semibold tabular-nums">
-                {money(Math.max(0, monthData.expectedTotal - monthData.receivedTotal))}
-              </div>
-            </div>
-          </div>
-        </Card>
-
-        {monthData.instances.length === 0 ? (
-          <EmptyState>No income projected for {month}. Add a source above.</EmptyState>
-        ) : (
-          <Table head={<><Th>Date</Th><Th>Source</Th><Th className="text-right">Expected</Th><Th>Status</Th><Th className="text-right">Received</Th><Th></Th></>}>
-
-            {monthData.instances.map((i) => (
-              <IncomeInstanceRow
-                key={i.id}
-                inst={i}
-                accounts={accts}
-                monthTxOptions={monthTxOptions}
-                onLink={handleLink}
-                onUnlink={handleUnlink}
-                onSkip={handleSkip}
-                onUnskip={handleUnskip}
-                onInvalidate={invalidate}
-              />
-            ))}
-          </Table>
-        )}
-      </section>
     </div>
   );
 }
@@ -377,10 +395,11 @@ function IncomePage() {
 type IncomeInst = Awaited<ReturnType<typeof getIncome>>["instances"][number];
 
 function IncomeInstanceRow({
-  inst, accounts, monthTxOptions, onLink, onUnlink, onSkip, onUnskip, onInvalidate,
+  inst, accounts, defaultAccountId, monthTxOptions, onLink, onUnlink, onSkip, onUnskip, onInvalidate,
 }: {
   inst: IncomeInst;
   accounts: { id: string; name: string }[];
+  defaultAccountId: string | null;
   monthTxOptions: { id: string; on_date: string; amount: number; currency: string; notes: string | null }[];
   onLink: (id: string, tx: string) => void;
   onUnlink: (id: string) => void;
@@ -393,7 +412,7 @@ function IncomeInstanceRow({
   const [amount, setAmount] = useState<string>(
     inst.received_amount != null ? String(inst.received_amount) : (inst.expected_amount != null ? String(inst.expected_amount) : ""),
   );
-  const [accountId, setAccountId] = useState<string>(accounts[0]?.id ?? "");
+  const [accountId, setAccountId] = useState<string>(defaultAccountId ?? accounts[0]?.id ?? "");
   const [onDate, setOnDate] = useState<string>(inst.transaction_date ?? inst.expected_date);
   const [notes, setNotes] = useState<string>("");
   const [pending, setPending] = useState(false);
@@ -413,116 +432,90 @@ function IncomeInstanceRow({
       .finally(() => setPending(false));
   };
 
+  const received = inst.status === "received";
+  const diff = received && inst.received_amount != null && inst.expected_amount != null ? inst.received_amount - inst.expected_amount : 0;
   return (
-    <>
-      <tr className={inst.status === "skipped" ? "opacity-50" : ""}>
-        <Td className="whitespace-nowrap tabular-nums">{inst.expected_date}</Td>
-        <Td>
-          <div className="font-medium">{inst.name}</div>
-          {inst.is_variable && <div className="text-[10px] uppercase tracking-wide text-muted-foreground">variable</div>}
-        </Td>
-        <Td className="text-right tabular-nums">
-          {inst.expected_amount == null ? <span className="text-xs text-muted-foreground">variable</span> : money(inst.expected_amount, inst.currency)}
-        </Td>
-        <Td><StatusPill status={inst.status} /></Td>
-        <Td className="text-right tabular-nums text-[color:var(--positive)]">
-          {inst.status === "received" && inst.received_amount != null ? money(inst.received_amount, inst.currency) : "—"}
-          {inst.transaction_date && <div className="text-[10px] text-muted-foreground">on {inst.transaction_date}</div>}
-        </Td>
-        <Td className="text-right">
-          <div className="flex flex-wrap justify-end gap-1">
-            {inst.status === "received" ? (
-              <>
-                <Button size="sm" variant="outline" onClick={() => setEntryOpen((v) => !v)}>{entryOpen ? "Close" : "Edit received"}</Button>
-                <Button size="sm" variant="ghost" onClick={() => onUnlink(inst.id)}>Unlink</Button>
-              </>
-            ) : inst.status === "skipped" ? (
-              <Button size="sm" variant="outline" onClick={() => onUnskip(inst.id)}>Un-skip</Button>
-            ) : (
-              <>
-                <Button size="sm" variant="outline" onClick={() => setEntryOpen((v) => !v)}>{entryOpen ? "Close" : "Enter received"}</Button>
-                <Select
-                  className="max-w-[180px] text-xs"
-                  value=""
-                  onChange={(e) => onLink(inst.id, e.target.value)}
-                  title="Or link an existing transaction"
-                >
-                  <option value="">Link transaction…</option>
+    <li className={`flex flex-col gap-2.5 p-3.5 ${inst.status === "skipped" ? "opacity-60" : ""}`}>
+      <div className="flex items-center gap-3">
+        <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] ${received ? "bg-[#dcefe3] text-[#2d6a45]" : "bg-[#fff0c9] text-[#8a6412]"}`}>
+          {received ? <Check size={18} strokeWidth={2.4} /> : <Clock size={18} />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[15px] font-semibold">{inst.name}</div>
+          <div className="truncate text-xs text-muted-foreground">
+            {dayLabel(inst.transaction_date ?? inst.expected_date)}
+            {inst.expected_amount == null ? " · amount varies" : received && diff !== 0 ? ` · expected ${money(inst.expected_amount, inst.currency)}` : ""}
+          </div>
+        </div>
+        <div className="flex flex-col items-end">
+          <span className={`text-[15px] font-bold tabular-nums ${received ? "text-[color:var(--positive)]" : ""}`}>
+            {received && inst.received_amount != null ? `+${money(inst.received_amount, inst.currency)}` : inst.expected_amount != null ? money(inst.expected_amount, inst.currency) : "Varies"}
+          </span>
+          <span className={`text-[11px] font-bold ${received ? "text-[color:var(--positive)]" : inst.status === "skipped" ? "text-muted-foreground" : "text-[color:var(--warning)]"}`}>
+            {received ? (diff > 0 ? `${money(diff)} more than expected` : diff < 0 ? `${money(-diff)} less than expected` : "Received") : inst.status === "skipped" ? "Skipped" : "Expected"}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2 pl-12">
+        {received ? (
+          <>
+            <Button size="sm" variant="outline" onClick={() => setEntryOpen((v) => !v)}>{entryOpen ? "Close" : "Edit"}</Button>
+            <Button size="sm" variant="ghost" onClick={() => onUnlink(inst.id)}>Unmatch</Button>
+          </>
+        ) : inst.status === "skipped" ? (
+          <Button size="sm" variant="outline" onClick={() => onUnskip(inst.id)}>Undo skip</Button>
+        ) : (
+          <>
+            <Button size="sm" onClick={() => setEntryOpen((v) => !v)}>{entryOpen ? "Close" : "Mark received"}</Button>
+            {monthTxOptions.length > 0 && (
+              <label className="inline-flex">
+                <span className="sr-only">Match a transaction</span>
+                <select value="" onChange={(e) => onLink(inst.id, e.target.value)}
+                  className="h-9 max-w-[190px] rounded-full border border-border bg-card px-3 text-xs font-semibold">
+                  <option value="">Match a transaction</option>
                   {monthTxOptions.map((t) => (
                     <option key={t.id} value={t.id}>
-                      {t.on_date} · {money(t.amount, t.currency)}{t.notes ? ` · ${t.notes.slice(0, 30)}` : ""}
+                      {t.on_date.slice(5)} · {money(t.amount, t.currency)}{t.notes ? ` · ${t.notes.slice(0, 24)}` : ""}
                     </option>
                   ))}
-                </Select>
-                <Button size="sm" variant="ghost" onClick={() => onSkip(inst.id)}>Skip</Button>
-              </>
+                </select>
+              </label>
             )}
-          </div>
-        </Td>
-      </tr>
-      {entryOpen && (
-        <tr className="bg-muted/30">
-          <td colSpan={6} className="px-3">
-            <div className="flex flex-wrap items-end gap-2 px-1 py-2">
-              <label className="flex flex-col gap-1 text-xs">
-                <span className="font-medium">Amount received</span>
-                <TextInput type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-32" />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                <span className="font-medium">Into account</span>
-                <Select value={accountId} onChange={(e) => setAccountId(e.target.value)} className="w-44">
-                  <option value="">— pick account —</option>
-                  {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </Select>
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                <span className="font-medium">Date</span>
-                <TextInput type="date" value={onDate} onChange={(e) => setOnDate(e.target.value)} className="w-40" />
-              </label>
-              <label className="flex flex-col gap-1 text-xs flex-1 min-w-[180px]">
-                <span className="font-medium">Note (optional)</span>
-                <TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. tip week" />
-              </label>
-              <Button size="sm" onClick={submit} disabled={!canSubmit}>
-                {inst.status === "received" ? "Save changes" : "Mark received"}
-              </Button>
-            </div>
-            <div className="px-1 pb-2 text-[11px] text-muted-foreground">
-              This creates (or updates) a real income Transaction on the chosen account, so its balance moves.
-            </div>
-          </td>
+            <Button size="sm" variant="ghost" onClick={() => onSkip(inst.id)}>Skip</Button>
+          </>
+        )}
+      </div>
 
-        </tr>
+      {entryOpen && (
+        <div className="ml-12 grid gap-2 rounded-2xl border border-dashed border-border bg-background p-3 sm:grid-cols-2">
+          <Field label="Amount received">
+            <TextInput type="number" step="0.01" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          </Field>
+          <Field label="Into account">
+            <Select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+              <option value="">Pick account</option>
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </Select>
+          </Field>
+          <Field label="Date"><TextInput type="date" value={onDate} onChange={(e) => setOnDate(e.target.value)} /></Field>
+          <Field label="Note (optional)"><TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. tip week" /></Field>
+          <div className="col-span-full flex items-center justify-between gap-2">
+            <span className="text-[11px] text-muted-foreground">Saves a real income transaction, so the account balance moves.</span>
+            <Button size="sm" onClick={submit} disabled={!canSubmit}>{received ? "Save" : "Mark received"}</Button>
+          </div>
+        </div>
       )}
-    </>
+    </li>
   );
 }
 
-
-function labelForFrequency(f: RecurringIncome["frequency"]) {
-  switch (f) {
-    case "biweekly": return "bi-weekly";
-    case "semimonthly": return "semi-monthly";
-    default: return f;
-  }
-}
 
 function scheduleSummary(s: RecurringIncome): string {
-  if (s.frequency === "biweekly") return `every 14 days from ${s.anchor_date ?? s.next_date}`;
-  if (s.frequency === "semimonthly") return `days ${s.semimonthly_day_1 ?? "?"} & ${s.semimonthly_day_2 ?? "?"} each month`;
-  if (s.frequency === "weekly") return `every 7 days from ${s.next_date}`;
-  return `next ${s.next_date}`;
+  const ord = (n: number | null) => (n == null ? "?" : n >= 31 ? "last day" : `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"}`);
+  if (s.frequency === "biweekly") return `Every 2 weeks from ${dayLabel(s.anchor_date ?? s.next_date)}`;
+  if (s.frequency === "semimonthly") return `Twice a month · ${ord(s.semimonthly_day_1)} and ${ord(s.semimonthly_day_2)}`;
+  if (s.frequency === "weekly") return `Weekly from ${dayLabel(s.next_date)}`;
+  return `${s.frequency === "monthly" ? "Monthly" : s.frequency === "quarterly" ? "Quarterly" : "Yearly"} · next ${dayLabel(s.next_date)}`;
 }
 
-function StatusPill({ status }: { status: "expected" | "received" | "skipped" }) {
-  const map: Record<string, string> = {
-    expected: "bg-muted text-foreground",
-    received: "bg-[color:var(--positive)]/15 text-[color:var(--positive)]",
-    skipped: "bg-muted text-muted-foreground line-through",
-  };
-  return (
-    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium capitalize ${map[status]}`}>
-      {status}
-    </span>
-  );
-}

@@ -272,7 +272,7 @@ function Bar({ pct, color, label }: { pct: number; color: string; label: string 
 }
 
 function BillGroup({ group, month }: { group: BudgetGroup; month: string }) {
-  const items = group.instances.filter((i) => i.status !== "paused");
+  const items = group.instances.filter((i) => i.status !== "paused").sort((x, y) => (x.due_day ?? 99) - (y.due_day ?? 99));
   return (
     <div className="overflow-hidden rounded-[20px] border border-border bg-card">
       <div className="flex items-center gap-2 px-3.5 pb-1 pt-3">
