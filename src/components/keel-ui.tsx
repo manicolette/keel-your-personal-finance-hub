@@ -139,3 +139,38 @@ export function EmptyState({ children }: { children: ReactNode }) {
     </div>
   );
 }
+
+export function currentMonth() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+export function OverrideConfirm({
+  count,
+  months,
+  busy,
+  onOverwrite,
+  onKeep,
+  onCancel,
+}: {
+  count: number;
+  months: string[];
+  busy?: boolean;
+  onOverwrite: () => void;
+  onKeep: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div role="alertdialog" className="rounded-xl border border-primary/40 bg-card p-4 shadow-sm">
+      <div className="text-sm font-medium">
+        {count} upcoming month{count === 1 ? " has" : "s have"} a manually changed amount for this item
+      </div>
+      <div className="mt-1 text-xs text-muted-foreground">{months.join(", ")}</div>
+      <div className="mt-3 flex flex-wrap justify-end gap-2">
+        <Button variant="ghost" size="sm" onClick={onCancel} disabled={busy}>Cancel</Button>
+        <Button variant="outline" size="sm" onClick={onKeep} disabled={busy}>Keep my changes</Button>
+        <Button size="sm" onClick={onOverwrite} disabled={busy}>Overwrite them</Button>
+      </div>
+    </div>
+  );
+}
