@@ -238,6 +238,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS mei_def_month_uidx ON monthly_expense_instance
 CREATE INDEX IF NOT EXISTS mei_month_idx ON monthly_expense_instances(month);
 CREATE INDEX IF NOT EXISTS mei_category_month_idx ON monthly_expense_instances(category_id, month);
 CREATE INDEX IF NOT EXISTS mei_txn_idx ON monthly_expense_instances(transaction_id);
+-- Additive: track manual per-month overrides, and let subscriptions feed the budget.
+ALTER TABLE monthly_expense_instances ADD COLUMN IF NOT EXISTS amount_overridden boolean NOT NULL DEFAULT false;
+ALTER TABLE monthly_expense_instances ADD COLUMN IF NOT EXISTS subscription_id uuid REFERENCES subscriptions(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS mei_sub_month_uidx ON monthly_expense_instances(subscription_id, month) WHERE subscription_id IS NOT NULL;
 
 -- Additive: extend recurring_income for bi-weekly / semi-monthly / variable amounts.
 ALTER TABLE recurring_income DROP CONSTRAINT IF EXISTS recurring_income_frequency_check;
