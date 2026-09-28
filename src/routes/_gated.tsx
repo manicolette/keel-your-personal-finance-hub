@@ -17,6 +17,8 @@ import {
   ListChecks,
   Settings as SettingsIcon,
   Lock,
+  MessageSquare,
+  LineChart,
 } from "lucide-react";
 import { toast } from "sonner";
 import { checkUnlocked, lockSite } from "@/lib/gate.functions";
@@ -38,6 +40,8 @@ const sideNav = [
   { to: "/monthly-expenses", label: "Bills", icon: ListChecks },
   { to: "/subscriptions", label: "Subscriptions", icon: Repeat },
   { to: "/income", label: "Income", icon: TrendingUp },
+  { to: "/recap", label: "Recap", icon: LineChart },
+  { to: "/ask", label: "Ask Keel", icon: MessageSquare },
   { to: "/debts", label: "Debts", icon: BarChart3 },
   { to: "/goals", label: "Goals", icon: Target },
   { to: "/accounts", label: "Accounts", icon: Wallet },

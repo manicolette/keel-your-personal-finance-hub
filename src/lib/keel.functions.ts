@@ -2,7 +2,8 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { db } from "./db.server";
 import { requireUnlocked } from "./session.server";
-import { replayBalance } from "./payoff";
+import { replayBalance, simulateStrategy, firstPaymentMonth } from "./payoff";
+import { parseAsk, type Period } from "./ask-parse";
 
 // -------------------------- Types --------------------------
 export type Account = {
@@ -167,6 +168,11 @@ export type Settings = {
   week_start: string;
   /** First month Keel tracks, "YYYY-MM". Nothing before it is shown. */
   start_month: string;
+  remind_log: boolean;
+  /** "HH:MM" after which Home nudges you if nothing was logged today. */
+  remind_time: string;
+  remind_bills: boolean;
+  remind_income: boolean;
 };
 export type BudgetLineItem = {
   id: string;
@@ -263,9 +269,14 @@ const dOrNull = (v: unknown): string | null => (v == null ? null : d(v));
 export const getSettings = createServerFn({ method: "GET" }).handler(async () => {
   await requireUnlocked();
   const sql = await db();
-  const rows = (await sql`SELECT id, base_currency, week_start, start_month FROM app_settings LIMIT 1`) as any[];
+  const rows = (await sql`SELECT id, base_currency, week_start, start_month, remind_log, remind_time, remind_bills, remind_income FROM app_settings LIMIT 1`) as any[];
   const r = rows[0];
-  return { ...r, start_month: r.start_month ? d(r.start_month).slice(0, 7) : DEFAULT_START_MONTH } as Settings;
+  return {
+    ...r,
+    start_month: r.start_month ? d(r.start_month).slice(0, 7) : DEFAULT_START_MONTH,
+    remind_log: r.remind_log !== false, remind_bills: r.remind_bills !== false, remind_income: r.remind_income !== false,
+    remind_time: r.remind_time ?? "20:30",
+  } as Settings;
 });
 
 export const updateSettings = createServerFn({ method: "POST" })
@@ -276,6 +287,10 @@ export const updateSettings = createServerFn({ method: "POST" })
         base_currency: z.string().min(1).max(8),
         week_start: z.enum(["sunday", "monday"]),
         start_month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+        remind_log: z.boolean().optional(),
+        remind_time: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+        remind_bills: z.boolean().optional(),
+        remind_income: z.boolean().optional(),
       })
       .parse(data),
   )
@@ -284,6 +299,12 @@ export const updateSettings = createServerFn({ method: "POST" })
     const sql = await db();
     await sql`UPDATE app_settings SET base_currency = ${data.base_currency}, week_start = ${data.week_start} WHERE id = ${data.id}`;
     if (data.start_month) await sql`UPDATE app_settings SET start_month = ${data.start_month + "-01"} WHERE id = ${data.id}`;
+    if (data.remind_log !== undefined) {
+      await sql`
+        UPDATE app_settings SET remind_log = ${data.remind_log}, remind_time = ${data.remind_time ?? "20:30"},
+          remind_bills = ${data.remind_bills ?? true}, remind_income = ${data.remind_income ?? true}
+        WHERE id = ${data.id}`;
+    }
     return { ok: true };
   });
 
@@ -2478,6 +2499,10 @@ export type HomeData = {
   goals: Goal[];
   debt: { total: number; minimums: number; extra: number; count: number };
   reminders: { id: string; title: string; due_date: string; amount: number | null }[];
+  /** "after" (HH:MM) means show only from that local time on. */
+  nudges: { kind: "log" | "bill" | "income"; text: string; after?: string }[];
+  /** Progress through first-time setup, for the checklist on Home. */
+  setup: { accounts_with_balance: number; bank_accounts: number; income_sources: number; bills: number; bills_without_account: number; limits: number };
 };
 
 const clampMonth = (month: string, start: string) => (month < start ? start : month);
@@ -2493,7 +2518,12 @@ export const getHome = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<HomeData> => {
     await requireUnlocked();
     const sql = await db();
-    const settings = (await sql`SELECT start_month FROM app_settings LIMIT 1`) as any[];
+    return loadHome(sql, data.month, data.today);
+  });
+
+async function loadHome(sql: any, monthIn: string, today: string): Promise<HomeData> {
+    const data = { month: monthIn, today };
+    const settings = (await sql`SELECT start_month, remind_log, remind_time, remind_bills, remind_income FROM app_settings LIMIT 1`) as any[];
     const start = settings[0]?.start_month ? d(settings[0].start_month).slice(0, 7) : DEFAULT_START_MONTH;
     const month = clampMonth(data.month, start);
 
@@ -2587,8 +2617,41 @@ export const getHome = createServerFn({ method: "GET" })
         count: debtRows.length,
       },
       reminders: reminderRows.map((r) => ({ id: r.id, title: r.title, due_date: d(r.due_date), amount: r.amount == null ? null : n(r.amount) })),
+      nudges: await buildNudges(sql, settings[0] ?? {}, data.today, month, pending, income.instances),
+      setup: {
+        accounts_with_balance: accounts.filter((a) => !a.archived && a.kind !== "credit" && a.current_balance !== 0).length,
+        bank_accounts: accounts.filter((a) => !a.archived && a.kind !== "credit").length,
+        income_sources: n(((await sql`SELECT COUNT(*) AS c FROM recurring_income WHERE active = true`) as any[])[0]?.c),
+        bills: instances.length,
+        bills_without_account: instances.filter((i) => !i.account_id).length,
+        limits: budget.groups.filter((g) => g.limit != null).length,
+      },
     };
-  });
+}
+
+// In-app reminders shown on Home: nothing logged today (after the chosen time), bills due today or
+// tomorrow, and pay expected today. Each can be switched off in Settings.
+async function buildNudges(sql: any, st: any, today: string, month: string, pending: MonthlyExpenseInstance[], incomeInst: IncomeInstance[]) {
+  const out: { kind: "log" | "bill" | "income"; text: string; after?: string }[] = [];
+  if (!today.startsWith(month)) return out;
+  const dayNum = Number(today.slice(8, 10));
+  if (st.remind_bills !== false) {
+    for (const i of pending) {
+      if (i.due_day === dayNum) out.push({ kind: "bill", text: `${i.name} (${i.planned_amount.toFixed(2)}) is due today.` });
+      else if (i.due_day === dayNum + 1) out.push({ kind: "bill", text: `${i.name} (${i.planned_amount.toFixed(2)}) is due tomorrow.` });
+    }
+  }
+  if (st.remind_income !== false) {
+    for (const i of incomeInst) {
+      if (i.status === "expected" && i.expected_date === today) out.push({ kind: "income", text: `${i.name} is expected today. Mark it received when it lands.` });
+    }
+  }
+  if (st.remind_log !== false) {
+    const logged = (await sql`SELECT 1 FROM transactions WHERE on_date = ${today}::date LIMIT 1`) as any[];
+    if (logged.length === 0) out.push({ kind: "log", text: "Nothing logged today yet. Anything to add?", after: String(st.remind_time ?? "20:30") });
+  }
+  return out;
+}
 
 // -------------------------- Plan the month --------------------------
 // The extra figures the Plan page needs beside the budget itself.
@@ -2616,4 +2679,267 @@ export const getPlanExtras = createServerFn({ method: "GET" })
       last_month: prevIso.slice(0, 7),
       last_month_spent: Object.fromEntries(lastRows.filter((r) => r.category_id).map((r) => [r.category_id as string, round2(n(r.total))])) as Record<string, number>,
     };
+  });
+
+// -------------------------- Monthly recap --------------------------
+export type RecapData = {
+  month: string;
+  start_month: string;
+  came_in: number;
+  went_out: number;
+  to_goals: number;
+  to_debt: number;
+  left_over: number;
+  categories: { id: string | null; name: string; color: string; icon: string | null; spent: number; limit: number | null; count: number }[];
+  everyday_total: number;
+  bills: { total: number; paid: number; count: number; paid_count: number; late_count: number };
+  months: { month: string; out: number }[];
+  notes: string[];
+};
+
+export const getRecap = createServerFn({ method: "GET" })
+  .inputValidator((data: unknown) => z.object({ month: z.string().regex(/^\d{4}-\d{2}$/) }).parse(data))
+  .handler(async ({ data }): Promise<RecapData> => {
+    await requireUnlocked();
+    const sql = await db();
+    const st = (await sql`SELECT start_month FROM app_settings LIMIT 1`) as any[];
+    const start = st[0]?.start_month ? d(st[0].start_month).slice(0, 7) : DEFAULT_START_MONTH;
+    const month = clampMonth(data.month, start);
+    const m1 = `${month}-01`;
+    const budget = await loadBudget(sql, month);
+    const [inOut, goalRows, debtRows, catRows, monthRows, prevRows] = await Promise.all([
+      sql`SELECT kind, COALESCE(SUM(amount),0) AS total FROM transactions
+          WHERE date_trunc('month', on_date) = ${m1}::date AND kind IN ('income','expense') GROUP BY kind` as Promise<any[]>,
+      sql`SELECT COALESCE(SUM(CASE WHEN kind = 'expense' THEN -amount ELSE amount END),0) AS total FROM transactions
+          WHERE goal_id IS NOT NULL AND date_trunc('month', on_date) = ${m1}::date` as Promise<any[]>,
+      sql`SELECT COALESCE(SUM(amount),0) AS total FROM debt_payments WHERE date_trunc('month', payment_date) = ${m1}::date` as Promise<any[]>,
+      // Everyday spending by category: expenses that are not a recorded bill payment.
+      sql`SELECT t.category_id, c.name, c.color, c.icon, COALESCE(SUM(t.amount),0) AS total, COUNT(*) AS n
+          FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+          WHERE t.kind = 'expense' AND date_trunc('month', t.on_date) = ${m1}::date
+            AND NOT EXISTS (SELECT 1 FROM monthly_expense_instances i WHERE i.transaction_id = t.id)
+          GROUP BY t.category_id, c.name, c.color, c.icon ORDER BY total DESC` as Promise<any[]>,
+      sql`SELECT to_char(date_trunc('month', on_date), 'YYYY-MM') AS m, COALESCE(SUM(amount),0) AS total FROM transactions
+          WHERE kind = 'expense' AND on_date >= GREATEST(${start + "-01"}::date, ${m1}::date - interval '5 months')
+            AND on_date < ${m1}::date + interval '1 month'
+          GROUP BY 1 ORDER BY 1` as Promise<any[]>,
+      sql`SELECT COALESCE(SUM(amount),0) AS total FROM transactions
+          WHERE kind = 'expense' AND date_trunc('month', on_date) = (${m1}::date - interval '1 month')` as Promise<any[]>,
+    ]);
+    const cameIn = n(inOut.find((r) => r.kind === "income")?.total);
+    const wentOut = n(inOut.find((r) => r.kind === "expense")?.total);
+    const limitByCat = new Map(budget.groups.filter((g) => g.limit != null).map((g) => [g.category_id, g.limit as number]));
+    const categories = catRows.map((r) => ({
+      id: r.category_id as string | null, name: r.name ?? "Uncategorized", color: r.color ?? "#94a3b8", icon: s(r.icon),
+      spent: round2(n(r.total)), limit: limitByCat.get(r.category_id) ?? null, count: Number(r.n),
+    }));
+    // Categories with a limit but no spending still show, at $0.
+    for (const g of budget.groups) {
+      if (g.limit != null && !categories.some((c) => c.id === g.category_id)) {
+        categories.push({ id: g.category_id, name: g.category_name, color: g.category_color, icon: g.category_icon, spent: 0, limit: g.limit, count: 0 });
+      }
+    }
+    const inst = budget.groups.flatMap((g) => g.instances).filter((i) => i.status !== "paused" && i.status !== "skipped");
+    const paid = inst.filter((i) => i.status === "paid");
+    const late = paid.filter((i) => i.due_day && i.transaction_date && Number(i.transaction_date.slice(8, 10)) > i.due_day && i.transaction_date.startsWith(month));
+
+    // Month-by-month outflow, filling empty months with zero.
+    const months: { month: string; out: number }[] = [];
+    const [y, mm] = month.split("-").map(Number);
+    for (let k = 5; k >= 0; k--) {
+      const dt = new Date(Date.UTC(y, mm - 1 - k, 1));
+      const key = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}`;
+      if (key < start) continue;
+      months.push({ month: key, out: round2(n(monthRows.find((r) => r.m === key)?.total)) });
+    }
+
+    const notes: string[] = [];
+    for (const c of categories) {
+      if (c.limit != null && c.spent > c.limit) notes.push(`${c.name} went over its ${money2(c.limit)} limit by ${money2(c.spent - c.limit)}, across ${c.count} purchase${c.count === 1 ? "" : "s"}.`);
+    }
+    if (inst.length > 0) {
+      notes.push(paid.length === inst.length
+        ? `All ${inst.length} bills were paid${late.length ? `, ${late.length} after the due day` : ", none late"}.`
+        : `${paid.length} of ${inst.length} bills are marked paid${late.length ? `, ${late.length} after the due day` : ""}.`);
+    }
+    const prevOut = n(prevRows[0]?.total);
+    const prevMonthKey = (() => { const dt = new Date(Date.UTC(y, mm - 2, 1)); return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}`; })();
+    if (prevOut > 0 && prevMonthKey >= start) {
+      const pct = Math.round(((wentOut - prevOut) / prevOut) * 100);
+      notes.push(pct === 0 ? "Spending was about the same as last month." : `You spent ${Math.abs(pct)}% ${pct > 0 ? "more" : "less"} than last month.`);
+    }
+    if (categories[0] && categories[0].spent > 0) notes.push(`Most everyday spending went to ${categories[0].name} (${money2(categories[0].spent)}).`);
+    const toGoals = n(goalRows[0]?.total);
+    if (toGoals > 0) notes.push(`${money2(toGoals)} went toward your goals.`);
+
+    return {
+      month, start_month: start,
+      came_in: round2(cameIn), went_out: round2(wentOut), to_goals: round2(toGoals), to_debt: round2(n(debtRows[0]?.total)),
+      left_over: round2(cameIn - wentOut),
+      categories,
+      everyday_total: round2(categories.reduce((a, c) => a + c.spent, 0)),
+      bills: { total: round2(inst.reduce((a, i) => a + i.planned_amount, 0)), paid: round2(paid.reduce((a, i) => a + (i.transaction_amount ?? i.planned_amount), 0)), count: inst.length, paid_count: paid.length, late_count: late.length },
+      months, notes,
+    };
+  });
+
+const money2 = (v: number) => `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+// -------------------------- Ask Keel --------------------------
+// Answers common questions from Keel's own data. No outside AI service is involved.
+export type AskAnswer = {
+  text: string;
+  rows?: { label: string; sub?: string; amount: number | null }[];
+  link?: { to: string; label: string; search?: Record<string, string> };
+};
+
+const periodBounds = (p: Period) => {
+  if (p.kind === "range") return { from: p.from, to: p.to, label: p.label };
+  const [y, m] = p.month.split("-").map(Number);
+  const last = daysInMonth(y, m);
+  const label = new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+  return { from: `${p.month}-01`, to: `${p.month}-${String(last).padStart(2, "0")}`, label: `in ${label}` };
+};
+
+export const askKeel = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({ question: z.string().min(1).max(300), today: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).parse(data),
+  )
+  .handler(async ({ data }): Promise<AskAnswer> => {
+    await requireUnlocked();
+    const sql = await db();
+    const [yy, mo, dd] = data.today.split("-").map(Number);
+    const parsed = parseAsk(data.question, new Date(yy, mo - 1, dd));
+    // Before Keel's start month, "this month" means the start month (same as Home).
+    const st = (await sql`SELECT start_month FROM app_settings LIMIT 1`) as any[];
+    const start = st[0]?.start_month ? d(st[0].start_month).slice(0, 7) : DEFAULT_START_MONTH;
+    const month = clampMonth(data.today.slice(0, 7), start);
+    const clampP = (p: Period): Period => (p.kind === "month" ? { kind: "month", month: clampMonth(p.month, start) } : p);
+    const intent = "period" in parsed ? { ...parsed, period: clampP(parsed.period) }
+      : parsed.type === "compare" ? { ...parsed, month: clampMonth(parsed.month, start) } : parsed;
+
+    switch (intent.type) {
+      case "spent_on": {
+        const b = periodBounds(intent.period);
+        const like = `%${intent.term.replace(/[%_]/g, "")}%`;
+        const rows = (await sql`
+          SELECT t.on_date, t.amount, t.notes, c.name AS cat FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+          WHERE t.kind = 'expense' AND t.on_date BETWEEN ${b.from}::date AND ${b.to}::date
+            AND (c.name ILIKE ${like} OR t.notes ILIKE ${like})
+          ORDER BY t.amount DESC`) as any[];
+        const total = rows.reduce((a, r) => a + n(r.amount), 0);
+        const lim = (await sql`SELECT monthly_limit FROM categories WHERE name ILIKE ${like} AND monthly_limit IS NOT NULL LIMIT 1`) as any[];
+        const limit = intent.period.kind === "month" && lim[0] ? n(lim[0].monthly_limit) : null;
+        const top = rows[0];
+        let text = rows.length === 0
+          ? `Nothing matching "${intent.term}" ${b.label}.`
+          : `${money2(total)} on ${intent.term} ${b.label}, across ${rows.length} purchase${rows.length === 1 ? "" : "s"}.`;
+        if (limit != null && rows.length) text += total > limit ? ` That's ${money2(total - limit)} over your ${money2(limit)} limit.` : ` ${money2(limit - total)} left of your ${money2(limit)} limit.`;
+        if (top && rows.length > 1) text += ` The biggest was ${top.notes || top.cat || "one purchase"} at ${money2(n(top.amount))}.`;
+        return {
+          text,
+          rows: rows.slice(0, 6).map((r) => ({ label: r.notes || r.cat || "Expense", sub: d(r.on_date), amount: n(r.amount) })),
+          link: rows.length ? { to: "/transactions", label: `See all ${rows.length}`, search: { view: "list", q: intent.term, from: b.from, to: b.to } } : undefined,
+        };
+      }
+      case "spent_total":
+      case "biggest": {
+        const b = periodBounds(intent.period);
+        const rows = (await sql`
+          SELECT t.on_date, t.amount, t.notes, c.name AS cat FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+          WHERE t.kind = 'expense' AND t.on_date BETWEEN ${b.from}::date AND ${b.to}::date ORDER BY t.amount DESC`) as any[];
+        const total = rows.reduce((a, r) => a + n(r.amount), 0);
+        if (intent.type === "biggest") {
+          return {
+            text: rows.length ? `Your biggest expenses ${b.label}:` : `No expenses logged ${b.label}.`,
+            rows: rows.slice(0, 5).map((r) => ({ label: r.notes || r.cat || "Expense", sub: `${d(r.on_date)}${r.cat ? ` · ${r.cat}` : ""}`, amount: n(r.amount) })),
+          };
+        }
+        return { text: `You spent ${money2(total)} ${b.label}, across ${rows.length} transaction${rows.length === 1 ? "" : "s"}.`,
+          link: { to: "/transactions", label: "Open Activity", search: { view: "list", from: b.from, to: b.to } } };
+      }
+      case "income": {
+        const b = periodBounds(intent.period);
+        const rows = (await sql`SELECT on_date, amount, notes FROM transactions WHERE kind = 'income' AND on_date BETWEEN ${b.from}::date AND ${b.to}::date ORDER BY on_date`) as any[];
+        const total = rows.reduce((a, r) => a + n(r.amount), 0);
+        return { text: `${money2(total)} came in ${b.label}.`, rows: rows.map((r) => ({ label: r.notes || "Income", sub: d(r.on_date), amount: n(r.amount) })),
+          link: { to: "/income", label: "Open Income" } };
+      }
+      case "due": {
+        const b = periodBounds(intent.period);
+        const home = await loadHome(sql, b.from.slice(0, 7), data.today);
+        const [by, bm] = b.from.slice(0, 7).split("-").map(Number);
+        const last = daysInMonth(by, bm);
+        const items = home.groups.flatMap((g) => g.instances).filter((i) => i.status === "pending").map((i) => ({
+          label: i.name, date: i.due_day ? `${b.from.slice(0, 7)}-${String(Math.min(i.due_day, last)).padStart(2, "0")}` : null, amount: i.planned_amount,
+        })).filter((i) => !i.date || (i.date >= b.from && i.date <= b.to && i.date >= data.today));
+        const rem = (await sql`SELECT title, due_date, amount FROM reminders WHERE done = false AND due_date BETWEEN ${b.from}::date AND ${b.to}::date`) as any[];
+        const all = [...items, ...rem.map((r) => ({ label: r.title, date: d(r.due_date), amount: r.amount == null ? null : n(r.amount) }))]
+          .sort((a, c) => (a.date ?? "9").localeCompare(c.date ?? "9"));
+        const total = all.reduce((a, r) => a + (r.amount ?? 0), 0);
+        return {
+          text: all.length ? `${all.length} thing${all.length === 1 ? "" : "s"} due ${b.label.replace(/^in /, "in ")}, ${money2(total)} in total.` : `Nothing due ${b.label}.`,
+          rows: all.map((r) => ({ label: r.label, sub: r.date ?? "no due day set", amount: r.amount })),
+          link: { to: "/transactions", label: "Open the calendar", search: { view: "calendar" } },
+        };
+      }
+      case "safe": {
+        const home = await loadHome(sql, month, data.today);
+        return {
+          text: home.safe_to_spend >= 0
+            ? `${money2(home.safe_to_spend)} is safe to spend for the rest of the month${home.days_left > 0 ? `, about ${money2(home.safe_to_spend / home.days_left)} a day` : ""}. That's what has come in, minus spending so far and ${money2(home.bills_due)} in bills still due.`
+            : `You're ${money2(-home.safe_to_spend)} over what has come in this month once the ${money2(home.bills_due)} in bills still due are paid.${home.income_still_expected > 0 ? ` ${money2(home.income_still_expected)} more is still expected.` : ""}`,
+          link: { to: "/home", label: "Open Home" },
+        };
+      }
+      case "afford": {
+        const home = await loadHome(sql, month, data.today);
+        const after = home.safe_to_spend - intent.amount;
+        const withExpected = after + home.income_still_expected;
+        const text = after >= 0
+          ? `Yes. ${money2(intent.amount)} would leave ${money2(after)} safe to spend this month.`
+          : withExpected >= 0
+            ? `Only once more pay comes in. Right now it would put you ${money2(-after)} over, but ${money2(home.income_still_expected)} is still expected this month.`
+            : `Not this month. It would put you ${money2(-after)} over, even counting the ${money2(home.income_still_expected)} still expected.`;
+        return { text, link: { to: "/budget", label: "Open Plan the month" } };
+      }
+      case "compare": {
+        const rows = (await sql`
+          SELECT to_char(date_trunc('month', t.on_date), 'YYYY-MM') AS m, COALESCE(c.name, 'Uncategorized') AS cat, SUM(t.amount) AS total
+          FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+          WHERE t.kind = 'expense' AND t.on_date >= ${intent.prev + "-01"}::date AND t.on_date < (${intent.month + "-01"}::date + interval '1 month')
+          GROUP BY 1, 2`) as any[];
+        const tot = (m: string) => rows.filter((r) => r.m === m).reduce((a, r) => a + n(r.total), 0);
+        const cur = tot(intent.month), prev = tot(intent.prev);
+        const cats = Array.from(new Set(rows.map((r) => r.cat as string)));
+        const diffs = cats.map((c) => ({
+          label: c,
+          amount: round2(n(rows.find((r) => r.m === intent.month && r.cat === c)?.total) - n(rows.find((r) => r.m === intent.prev && r.cat === c)?.total)),
+        })).filter((x) => x.amount !== 0).sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount)).slice(0, 5);
+        return {
+          text: prev === 0 ? `Nothing was logged the month before, so there's nothing to compare yet. This month so far: ${money2(cur)}.`
+            : `This month so far ${money2(cur)}, last month ${money2(prev)}. Biggest changes by category:`,
+          rows: prev === 0 ? undefined : diffs.map((x) => ({ label: x.label, sub: x.amount > 0 ? "more" : "less", amount: Math.abs(x.amount) })),
+          link: { to: "/recap", label: "Open the monthly recap" },
+        };
+      }
+      case "debt_free": {
+        const debts = (await sql`SELECT id, name, balance, apr, min_payment, extra_payment, promo_apr, promo_end_date FROM debts WHERE paid_off_at IS NULL`) as any[];
+        if (debts.length === 0) return { text: "You have no open debts in Keel." };
+        const extra = debts.reduce((a, r) => a + n(r.extra_payment), 0);
+        const plan = simulateStrategy(debts.map((r) => ({
+          id: r.id, name: r.name, balance: n(r.balance), apr: n(r.apr), minPayment: n(r.min_payment), extraPayment: 0,
+          promoApr: r.promo_apr == null ? null : n(r.promo_apr), promoEndDate: dOrNull(r.promo_end_date),
+        })), extra, "avalanche", firstPaymentMonth(null, data.today));
+        if (plan.neverPaysOff) return { text: "At the current payments the balances don't go down. Raise a minimum or add an extra payment on the Debts page.", link: { to: "/debts", label: "Open Debts" } };
+        const when = new Date(`${plan.debtFreeMonth}-01T00:00:00Z`).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+        return {
+          text: `On the avalanche plan${extra > 0 ? ` with ${money2(extra)} extra a month` : ""}, you'd be debt free in ${when}, paying about ${money2(plan.totalInterest)} in interest.`,
+          rows: plan.order.map((o) => ({ label: o.name, sub: `paid off ${o.payoffMonth}`, amount: null })),
+          link: { to: "/debts", label: "Open Debts" },
+        };
+      }
+      default:
+        return { text: "I can answer questions like: how much did I spend on groceries this month, what's due this week, how much is safe to spend, can I afford $90 on Saturday, compare to last month, my biggest expenses, or when will I be debt free." };
+    }
   });

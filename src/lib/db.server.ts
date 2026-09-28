@@ -319,6 +319,12 @@ ALTER TABLE monthly_expenses ADD COLUMN IF NOT EXISTS due_day int CHECK (due_day
 -- only fills an empty value, so a start month changed later in Settings is kept.
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS start_month date;
 UPDATE app_settings SET start_month = '2026-10-01' WHERE start_month IS NULL;
+
+-- Additive: in-app reminder switches (shown on Home). All on by default.
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS remind_log boolean NOT NULL DEFAULT true;
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS remind_time text NOT NULL DEFAULT '20:30';
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS remind_bills boolean NOT NULL DEFAULT true;
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS remind_income boolean NOT NULL DEFAULT true;
 `;
 
 export function ensureSchema(): Promise<void> {

@@ -2,7 +2,8 @@ import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
-import { getSettings, updateSettings } from "@/lib/keel.functions";
+import { useState } from "react";
+import { getSettings, updateSettings, type Settings } from "@/lib/keel.functions";
 import { lockSite } from "@/lib/gate.functions";
 import { Button, Card, Field, PageHeader, Select, TextInput } from "@/components/keel-ui";
 
@@ -56,6 +57,8 @@ function SettingsPage() {
         </form>
       </Card>
 
+      <RemindersCard settings={settings} onSave={(patch) => mUpdate.mutate({ data: { id: settings.id, base_currency: settings.base_currency, week_start: settings.week_start as "sunday" | "monday", ...patch } })} busy={mUpdate.isPending} />
+
       <Card>
         <h2 className="mb-2 text-sm font-semibold">Session</h2>
         <p className="mb-3 text-sm text-muted-foreground">
@@ -67,5 +70,44 @@ function SettingsPage() {
         }}>Lock now</Button>
       </Card>
     </div>
+  );
+}
+
+type ReminderPatch = { remind_log: boolean; remind_time: string; remind_bills: boolean; remind_income: boolean };
+
+function RemindersCard({ settings, onSave, busy }: { settings: Settings; onSave: (p: ReminderPatch) => void; busy: boolean }) {
+  const [v, setV] = useState<ReminderPatch>({
+    remind_log: settings.remind_log, remind_time: settings.remind_time, remind_bills: settings.remind_bills, remind_income: settings.remind_income,
+  });
+  const Toggle = ({ k, title, sub }: { k: "remind_log" | "remind_bills" | "remind_income"; title: string; sub: string }) => (
+    <div className="flex items-center gap-3 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="text-[15px] font-semibold">{title}</div>
+        <div className="text-xs text-muted-foreground">{sub}</div>
+      </div>
+      <button type="button" role="switch" aria-checked={v[k]} aria-label={title} onClick={() => setV((x) => ({ ...x, [k]: !x[k] }))}
+        className={`flex h-8 w-[52px] shrink-0 rounded-full p-[3px] transition-colors ${v[k] ? "justify-end bg-primary" : "justify-start bg-[#d0c8bb]"}`}>
+        <span className="h-[26px] w-[26px] rounded-full bg-white shadow-sm" />
+      </button>
+    </div>
+  );
+  return (
+    <Card>
+      <h2 className="text-lg">Reminders</h2>
+      <p className="mb-1 text-xs text-muted-foreground">Shown at the top of Home when they apply.</p>
+      <div className="divide-y divide-muted">
+        <Toggle k="remind_log" title="Daily logging reminder" sub="If nothing was logged today" />
+        {v.remind_log && (
+          <label className="flex items-center gap-3 py-3">
+            <span className="flex-1 text-[15px] font-semibold">Remind me from</span>
+            <input type="time" value={v.remind_time} onChange={(e) => setV((x) => ({ ...x, remind_time: e.target.value || "20:30" }))}
+              className="h-10 rounded-xl border border-input bg-background px-3 text-sm font-semibold" />
+          </label>
+        )}
+        <Toggle k="remind_bills" title="Bills due soon" sub="The day before and the day a bill is due" />
+        <Toggle k="remind_income" title="Income expected" sub="On payday, to confirm it arrived" />
+      </div>
+      <div className="flex justify-end pt-2"><Button onClick={() => onSave(v)} disabled={busy}>Save reminders</Button></div>
+    </Card>
   );
 }

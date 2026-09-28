@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import {
   Bell, ChevronRight, Globe, Landmark, ListChecks, Lock, PieChart, Repeat, Settings as SettingsIcon, Tags, Target, TrendingUp,
-  ArrowLeftRight, LineChart,
+  ArrowLeftRight, LineChart, BarChart3, MessageSquare,
 } from "lucide-react";
 import { getLiveNetWorth } from "@/lib/keel.functions";
 import { lockSite } from "@/lib/gate.functions";
@@ -18,6 +18,8 @@ type Row = { to: string; label: string; sub: string; icon: typeof Bell; tint: st
 const money_: Row[] = [
   { to: "/budget", label: "Plan the month", sub: "Bills, limits and one-offs for each month", icon: PieChart, tint: "#d9f0ee", fg: "#1f6f6b" },
   { to: "/income", label: "Income", sub: "Expected vs received each month", icon: TrendingUp, tint: "#dcefe3", fg: "#2d6a45" },
+  { to: "/recap", label: "Monthly recap", sub: "Where it went, month over month", icon: BarChart3, tint: "#d9f0ee", fg: "#1f6f6b" },
+  { to: "/ask", label: "Ask Keel", sub: "Questions about your money", icon: MessageSquare, tint: "#e6e1f7", fg: "#4e3f99" },
   { to: "/transactions", label: "Transactions and transfers", sub: "Everything logged, and moving money", icon: ArrowLeftRight, tint: "#e3e8ee", fg: "#34495e" },
   { to: "/goals", label: "Goals", sub: "Linked to real accounts", icon: Target, tint: "#d9f0ee", fg: "#1f6f6b" },
   { to: "/reminders", label: "Reminders", sub: "One-off things to pay or do", icon: Bell, tint: "#e6e1f7", fg: "#4e3f99" },
@@ -29,7 +31,7 @@ const setup: Row[] = [
   { to: "/subscriptions", label: "Subscriptions", sub: "Recurring charges, listed by name", icon: Repeat, tint: "#e6e1f7", fg: "#4e3f99" },
   { to: "/categories", label: "Categories", sub: "Icons, colors and spending limits", icon: Tags, tint: "#f4ddf0", fg: "#8a3479" },
   { to: "/fx", label: "Currencies", sub: "Exchange rates", icon: Globe, tint: "#fff0c9", fg: "#8a6412" },
-  { to: "/settings", label: "Settings", sub: "Start month, currency", icon: SettingsIcon, tint: "#ede7dd", fg: "#5e5a54" },
+  { to: "/settings", label: "Settings", sub: "Reminders, start month, currency", icon: SettingsIcon, tint: "#ede7dd", fg: "#5e5a54" },
 ];
 
 function MorePage() {

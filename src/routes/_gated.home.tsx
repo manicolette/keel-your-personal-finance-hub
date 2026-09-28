@@ -2,7 +2,8 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
 import { zodValidator, fallback } from "@tanstack/zod-adapter";
 import { z } from "zod";
-import { ChevronLeft, ChevronRight, PencilLine, Plus, ShieldCheck, Landmark, Bell } from "lucide-react";
+import { ChevronLeft, ChevronRight, PencilLine, Plus, ShieldCheck, Landmark, Bell, MessageSquare, Check, X } from "lucide-react";
+import { useState } from "react";
 import { getHome, type BudgetGroup, type HomeData, type MonthlyExpenseInstance } from "@/lib/keel.functions";
 import { CategoryIcon, money } from "@/components/keel-ui";
 import { useQuickAdd } from "@/components/quick-add";
@@ -46,9 +47,15 @@ function HomePage() {
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-6">
-      <header className="md:hidden">
-        <span className="font-display text-[30px] font-semibold text-primary">keel</span>
+      <header className="flex items-center justify-between">
+        <span className="font-display text-[30px] font-semibold text-primary md:invisible">keel</span>
+        <Link to="/ask" className="flex h-11 items-center gap-1.5 rounded-full border border-border bg-card px-4 text-sm font-bold">
+          <MessageSquare size={17} /> Ask
+        </Link>
       </header>
+
+      <SetupChecklist data={data} />
+      <Nudges data={data} onLog={() => quickAdd.open()} />
 
       <SafeToSpendCard data={data} month={month} />
 
@@ -329,5 +336,62 @@ function SpendCard({ group }: { group: BudgetGroup }) {
       </div>
       <Bar pct={over ? 100 : pct} color={over ? "var(--negative)" : group.category_color} label={`${group.category_name}: ${money(spent)} of ${money(limit)} spent`} />
     </div>
+  );
+}
+
+function Nudges({ data, onLog }: { data: HomeData; onLog: () => void }) {
+  const [hidden, setHidden] = useState<string[]>([]);
+  const now = new Date();
+  const hhmm = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const items = data.nudges.filter((n) => !hidden.includes(n.text) && (!n.after || hhmm >= n.after));
+  if (items.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-2" aria-live="polite">
+      {items.map((n) => (
+        <div key={n.text} className={`flex items-center gap-3 rounded-2xl px-3.5 py-3 text-sm ${n.kind === "bill" ? "bg-[#fbe1d5] text-[#6e2a17]" : n.kind === "income" ? "bg-[#dcefe3] text-[#1e4a31]" : "bg-accent text-accent-foreground"}`}>
+          <Bell size={17} className="shrink-0" />
+          <span className="flex-1">{n.text}</span>
+          {n.kind === "log" && <button onClick={onLog} className="h-9 shrink-0 rounded-full bg-primary px-3 text-xs font-bold text-primary-foreground">Log it</button>}
+          {n.kind === "income" && <Link to="/income" className="h-9 shrink-0 rounded-full bg-foreground px-3 py-2 text-xs font-bold text-background">Income</Link>}
+          <button onClick={() => setHidden((h) => [...h, n.text])} aria-label="Dismiss" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full"><X size={16} /></button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// First-run guide. Disappears once every step is done.
+function SetupChecklist({ data }: { data: HomeData }) {
+  const s = data.setup;
+  const steps = [
+    { done: s.bank_accounts > 0 && s.accounts_with_balance > 0, title: "Your accounts and balances", sub: s.bank_accounts === 0 ? "Add your bank accounts" : `${s.bank_accounts - s.accounts_with_balance} still at $0. Enter what's in them now`, to: "/accounts" },
+    { done: s.income_sources > 0, title: "Income you expect", sub: "Stipend, paychecks, anything regular", to: "/income" },
+    { done: s.bills > 0 && s.bills_without_account === 0, title: "Bills and the account that pays each", sub: s.bills === 0 ? "Rent, phone, subscriptions, debt minimums" : `${s.bills_without_account} bill${s.bills_without_account === 1 ? "" : "s"} still need a paying account`, to: "/monthly-expenses" },
+    { done: s.limits > 0, title: "Spending limits", sub: "Groceries, eating out, gas, fun", to: "/categories" },
+  ];
+  const left = steps.filter((x) => !x.done).length;
+  if (left === 0) return null;
+  return (
+    <section className="flex flex-col gap-2.5 rounded-3xl border border-border bg-card p-4">
+      <div>
+        <h2 className="text-[22px]">Finish setting up</h2>
+        <p className="text-[13px] text-muted-foreground">{left} step{left === 1 ? "" : "s"} left. Home gets accurate once these are in.</p>
+      </div>
+      <ol className="flex flex-col gap-2">
+        {steps.map((st, i) => (
+          <li key={st.title}>
+            <Link to={st.to} className={`flex items-center gap-3 rounded-2xl border p-3 ${st.done ? "border-border" : "border-primary"}`}>
+              <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold ${st.done ? "bg-[color:var(--positive)] text-white" : "border-2 border-primary text-primary"}`}>
+                {st.done ? <Check size={16} strokeWidth={2.6} /> : i + 1}
+              </span>
+              <span className="flex min-w-0 flex-col">
+                <span className={`text-[15px] font-bold ${st.done ? "text-muted-foreground line-through" : ""}`}>{st.title}</span>
+                {!st.done && <span className="text-xs text-muted-foreground">{st.sub}</span>}
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }

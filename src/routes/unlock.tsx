@@ -3,7 +3,6 @@ import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import { toast } from "sonner";
 import { checkUnlocked, unlockSite } from "@/lib/gate.functions";
-import { Button, Card, Field, TextInput } from "@/components/keel-ui";
 
 export const Route = createFileRoute("/unlock")({
   beforeLoad: async () => {
@@ -38,31 +37,30 @@ function UnlockPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <Card className="w-full max-w-sm">
-        <div className="mb-5 text-center">
-          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground text-lg font-semibold">
-            K
-          </div>
-          <h1 className="text-xl font-semibold tracking-tight">Keel</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Enter your password to continue.</p>
-        </div>
-        <form onSubmit={onSubmit} className="space-y-4">
-          <Field label="Password">
-            <TextInput
-              type="password"
-              autoFocus
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </Field>
-          <Button type="submit" className="w-full" disabled={submitting}>
-            {submitting ? "Unlocking…" : "Unlock"}
-          </Button>
-        </form>
-      </Card>
+    <div className="flex min-h-screen flex-col items-center bg-[#1d2a33] px-8 pb-12 pt-24 text-white">
+      <div className="font-display text-[48px] font-semibold text-[#9fd8d3]">keel</div>
+      <p className="mt-2 text-[15px] text-[#c9d1d6]">Enter your password to continue</p>
+      <form onSubmit={onSubmit} className="mt-10 flex w-full max-w-xs flex-col gap-4">
+        <label className="flex flex-col gap-2">
+          <span className="sr-only">Password</span>
+          <input
+            type="password"
+            autoFocus
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            placeholder="Password"
+            className="h-14 rounded-2xl border border-[#4a5a66] bg-[#2a3a45] px-4 text-center text-lg tracking-widest text-white outline-none placeholder:tracking-normal placeholder:text-[#8a9aa6] focus:border-[#9fd8d3]"
+          />
+        </label>
+        <button type="submit" disabled={submitting}
+          className="h-14 rounded-2xl bg-[#9fd8d3] text-base font-bold text-[#1d2a33] disabled:opacity-60">
+          {submitting ? "Unlocking…" : "Unlock"}
+        </button>
+      </form>
+      <div className="flex-1" />
+      <p className="text-center text-[13px] text-[#c9d1d6]">Your browser or password manager can fill this in for you.</p>
     </div>
   );
 }
