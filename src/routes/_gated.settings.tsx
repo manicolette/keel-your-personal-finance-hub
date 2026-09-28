@@ -3,6 +3,7 @@ import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@ta
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { useState } from "react";
+import { PushSettingsCard } from "@/components/push-settings";
 import { getSettings, updateSettings, type Settings } from "@/lib/keel.functions";
 import { lockSite } from "@/lib/gate.functions";
 import { Button, Card, Field, PageHeader, Select, TextInput } from "@/components/keel-ui";
@@ -58,6 +59,8 @@ function SettingsPage() {
       </Card>
 
       <RemindersCard settings={settings} onSave={(patch) => mUpdate.mutate({ data: { id: settings.id, base_currency: settings.base_currency, week_start: settings.week_start as "sunday" | "monday", ...patch } })} busy={mUpdate.isPending} />
+
+      <PushSettingsCard />
 
       <Card>
         <h2 className="mb-2 text-sm font-semibold">Session</h2>

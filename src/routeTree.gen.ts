@@ -13,6 +13,8 @@ import { Route as UnlockRouteImport } from './routes/unlock'
 import { Route as GatedRouteImport } from './routes/_gated'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiUploadReceiptRouteImport } from './routes/api/upload-receipt'
+import { Route as ApiPushDigestRouteImport } from './routes/api/push-digest'
+import { Route as ApiPushCronRouteImport } from './routes/api/push-cron'
 import { Route as GatedTransactionsRouteImport } from './routes/_gated.transactions'
 import { Route as GatedSubscriptionsRouteImport } from './routes/_gated.subscriptions'
 import { Route as GatedSettingsRouteImport } from './routes/_gated.settings'
@@ -50,6 +52,16 @@ const IndexRoute = IndexRouteImport.update({
 const ApiUploadReceiptRoute = ApiUploadReceiptRouteImport.update({
   id: '/api/upload-receipt',
   path: '/api/upload-receipt',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPushDigestRoute = ApiPushDigestRouteImport.update({
+  id: '/api/push-digest',
+  path: '/api/push-digest',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPushCronRoute = ApiPushCronRouteImport.update({
+  id: '/api/push-cron',
+  path: '/api/push-cron',
   getParentRoute: () => rootRouteImport,
 } as any)
 const GatedTransactionsRoute = GatedTransactionsRouteImport.update({
@@ -170,6 +182,8 @@ export interface FileRoutesByFullPath {
   '/settings': typeof GatedSettingsRoute
   '/subscriptions': typeof GatedSubscriptionsRoute
   '/transactions': typeof GatedTransactionsRoute
+  '/api/push-cron': typeof ApiPushCronRoute
+  '/api/push-digest': typeof ApiPushDigestRoute
   '/api/upload-receipt': typeof ApiUploadReceiptRoute
 }
 export interface FileRoutesByTo {
@@ -194,6 +208,8 @@ export interface FileRoutesByTo {
   '/settings': typeof GatedSettingsRoute
   '/subscriptions': typeof GatedSubscriptionsRoute
   '/transactions': typeof GatedTransactionsRoute
+  '/api/push-cron': typeof ApiPushCronRoute
+  '/api/push-digest': typeof ApiPushDigestRoute
   '/api/upload-receipt': typeof ApiUploadReceiptRoute
 }
 export interface FileRoutesById {
@@ -220,6 +236,8 @@ export interface FileRoutesById {
   '/_gated/settings': typeof GatedSettingsRoute
   '/_gated/subscriptions': typeof GatedSubscriptionsRoute
   '/_gated/transactions': typeof GatedTransactionsRoute
+  '/api/push-cron': typeof ApiPushCronRoute
+  '/api/push-digest': typeof ApiPushDigestRoute
   '/api/upload-receipt': typeof ApiUploadReceiptRoute
 }
 export interface FileRouteTypes {
@@ -246,6 +264,8 @@ export interface FileRouteTypes {
     | '/settings'
     | '/subscriptions'
     | '/transactions'
+    | '/api/push-cron'
+    | '/api/push-digest'
     | '/api/upload-receipt'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -270,6 +290,8 @@ export interface FileRouteTypes {
     | '/settings'
     | '/subscriptions'
     | '/transactions'
+    | '/api/push-cron'
+    | '/api/push-digest'
     | '/api/upload-receipt'
   id:
     | '__root__'
@@ -295,6 +317,8 @@ export interface FileRouteTypes {
     | '/_gated/settings'
     | '/_gated/subscriptions'
     | '/_gated/transactions'
+    | '/api/push-cron'
+    | '/api/push-digest'
     | '/api/upload-receipt'
   fileRoutesById: FileRoutesById
 }
@@ -302,6 +326,8 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   GatedRoute: typeof GatedRouteWithChildren
   UnlockRoute: typeof UnlockRoute
+  ApiPushCronRoute: typeof ApiPushCronRoute
+  ApiPushDigestRoute: typeof ApiPushDigestRoute
   ApiUploadReceiptRoute: typeof ApiUploadReceiptRoute
 }
 
@@ -333,6 +359,20 @@ declare module '@tanstack/react-router' {
       path: '/api/upload-receipt'
       fullPath: '/api/upload-receipt'
       preLoaderRoute: typeof ApiUploadReceiptRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/push-digest': {
+      id: '/api/push-digest'
+      path: '/api/push-digest'
+      fullPath: '/api/push-digest'
+      preLoaderRoute: typeof ApiPushDigestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/push-cron': {
+      id: '/api/push-cron'
+      path: '/api/push-cron'
+      fullPath: '/api/push-cron'
+      preLoaderRoute: typeof ApiPushCronRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_gated/transactions': {
@@ -521,6 +561,8 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   GatedRoute: GatedRouteWithChildren,
   UnlockRoute: UnlockRoute,
+  ApiPushCronRoute: ApiPushCronRoute,
+  ApiPushDigestRoute: ApiPushDigestRoute,
   ApiUploadReceiptRoute: ApiUploadReceiptRoute,
 }
 export const routeTree = rootRouteImport

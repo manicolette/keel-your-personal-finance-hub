@@ -4,6 +4,8 @@ import { db } from "./db.server";
 import { requireUnlocked } from "./session.server";
 import { replayBalance, simulateStrategy, firstPaymentMonth } from "./payoff";
 import { parseAsk, type Period } from "./ask-parse";
+// push.server uses node:crypto, so it is only ever loaded on the server, inside the functions below.
+const pushLib = () => import("./push.server");
 
 // -------------------------- Types --------------------------
 export type Account = {
@@ -2637,8 +2639,8 @@ async function buildNudges(sql: any, st: any, today: string, month: string, pend
   const dayNum = Number(today.slice(8, 10));
   if (st.remind_bills !== false) {
     for (const i of pending) {
-      if (i.due_day === dayNum) out.push({ kind: "bill", text: `${i.name} (${i.planned_amount.toFixed(2)}) is due today.` });
-      else if (i.due_day === dayNum + 1) out.push({ kind: "bill", text: `${i.name} (${i.planned_amount.toFixed(2)}) is due tomorrow.` });
+      if (i.due_day === dayNum) out.push({ kind: "bill", text: `${i.name} ($${i.planned_amount.toFixed(2)}) is due today.` });
+      else if (i.due_day === dayNum + 1) out.push({ kind: "bill", text: `${i.name} ($${i.planned_amount.toFixed(2)}) is due tomorrow.` });
     }
   }
   if (st.remind_income !== false) {
@@ -2943,3 +2945,107 @@ export const askKeel = createServerFn({ method: "POST" })
         return { text: "I can answer questions like: how much did I spend on groceries this month, what's due this week, how much is safe to spend, can I afford $90 on Saturday, compare to last month, my biggest expenses, or when will I be debt free." };
     }
   });
+
+
+// -------------------------- Phone notifications --------------------------
+export type PushStatus = {
+  public_key: string | null;
+  keys_ready: boolean;
+  cron_ready: boolean;
+  devices: { id: string; endpoint: string; device: string | null; created_at: string; last_sent_at: string | null; last_error: string | null }[];
+};
+
+export const getPushStatus = createServerFn({ method: "GET" }).handler(async (): Promise<PushStatus> => {
+  await requireUnlocked();
+  const sql = await db();
+  const cfg = (await pushLib()).vapidConfig();
+  const rows = (await sql`SELECT id, endpoint, device, created_at, last_sent_at, last_error FROM push_subscriptions ORDER BY created_at`) as any[];
+  return {
+    public_key: cfg.publicKey,
+    keys_ready: cfg.ready,
+    cron_ready: !!process.env.CRON_SECRET,
+    devices: rows.map((r) => ({
+      id: r.id, endpoint: r.endpoint, device: s(r.device), created_at: String(r.created_at),
+      last_sent_at: r.last_sent_at == null ? null : String(r.last_sent_at), last_error: s(r.last_error),
+    })),
+  };
+});
+
+export const savePushSubscription = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      endpoint: z.string().url().max(1000),
+      p256dh: z.string().min(10).max(200),
+      auth: z.string().min(4).max(100),
+      device: z.string().max(120).nullable().optional(),
+      timezone: z.string().max(60).nullable().optional(),
+    }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    await sql`
+      INSERT INTO push_subscriptions (endpoint, p256dh, auth, device)
+      VALUES (${data.endpoint}, ${data.p256dh}, ${data.auth}, ${data.device ?? null})
+      ON CONFLICT (endpoint) DO UPDATE SET p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, device = EXCLUDED.device, last_error = NULL`;
+    if (data.timezone) await sql`UPDATE app_settings SET timezone = ${data.timezone}`;
+    return { ok: true };
+  });
+
+export const removePushSubscription = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => z.object({ endpoint: z.string().max(1000) }).parse(data))
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    await sql`DELETE FROM push_subscriptions WHERE endpoint = ${data.endpoint}`;
+    return { ok: true };
+  });
+
+async function pushTo(sql: any, endpoint: string) {
+  const res = await (await pushLib()).sendPush(endpoint);
+  if (res.ok) await sql`UPDATE push_subscriptions SET last_sent_at = now(), last_error = NULL WHERE endpoint = ${endpoint}`;
+  else if (res.gone) await sql`DELETE FROM push_subscriptions WHERE endpoint = ${endpoint}`;
+  else await sql`UPDATE push_subscriptions SET last_error = ${`${res.status} ${res.error}`.slice(0, 300)} WHERE endpoint = ${endpoint}`;
+  return res;
+}
+
+export const sendTestPush = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => z.object({ endpoint: z.string().max(1000) }).parse(data))
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    await sql`UPDATE app_settings SET push_test_at = now()`;
+    const res = await pushTo(sql, data.endpoint);
+    if (!res.ok) throw new Error(res.gone ? "This phone's notification permission has expired. Turn notifications on again." : `Push service said: ${res.error}`);
+    return { ok: true };
+  });
+
+/** What a notification should say right now. Used by the service worker and the daily job. */
+export async function pushDigest(sql: any, now = new Date()): Promise<{ send: boolean; title: string; body: string; url: string }> {
+  const st = ((await sql`SELECT start_month, timezone, push_test_at FROM app_settings LIMIT 1`) as any[])[0] ?? {};
+  if (st.push_test_at && now.getTime() - new Date(st.push_test_at).getTime() < 3 * 60 * 1000) {
+    return { send: true, title: "Keel", body: "Notifications are working on this phone.", url: "/settings" };
+  }
+  const today = (await pushLib()).todayIn(st.timezone, now);
+  const start = st.start_month ? d(st.start_month).slice(0, 7) : DEFAULT_START_MONTH;
+  const home = await loadHome(sql, clampMonth(today.slice(0, 7), start), today);
+  const items = home.nudges;
+  if (items.length === 0) return { send: false, title: "Keel", body: "All clear today.", url: "/home" };
+  const bills = items.filter((i) => i.kind === "bill");
+  const lines = [
+    ...items.filter((i) => i.kind === "income").map((i) => i.text),
+    ...(bills.length > 2 ? [`${bills.length} bills are due today or tomorrow.`] : bills.map((i) => i.text)),
+    ...items.filter((i) => i.kind === "log").map((i) => i.text),
+  ];
+  return { send: true, title: bills.length ? "Keel · bills due" : "Keel", body: lines.join(" "), url: bills.length ? "/budget" : "/home" };
+}
+
+/** The daily job: send one reminder to every phone if there's anything to say. */
+export async function runDailyPush(sql: any) {
+  const digest = await pushDigest(sql);
+  if (!digest.send) return { sent: 0, reason: "nothing to remind" };
+  const subs = (await sql`SELECT endpoint FROM push_subscriptions`) as any[];
+  let sent = 0;
+  for (const sub of subs) if ((await pushTo(sql, sub.endpoint)).ok) sent++;
+  return { sent, of: subs.length };
+}

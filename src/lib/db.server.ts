@@ -325,6 +325,20 @@ ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS remind_log boolean NOT NULL DE
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS remind_time text NOT NULL DEFAULT '20:30';
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS remind_bills boolean NOT NULL DEFAULT true;
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS remind_income boolean NOT NULL DEFAULT true;
+
+-- Additive: phone notifications. One row per phone/browser that turned notifications on.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  endpoint text NOT NULL UNIQUE,
+  p256dh text NOT NULL,
+  auth text NOT NULL,
+  device text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_sent_at timestamptz,
+  last_error text
+);
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS timezone text;
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS push_test_at timestamptz;
 `;
 
 export function ensureSchema(): Promise<void> {
