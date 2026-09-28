@@ -88,6 +88,13 @@ function SubscriptionsPage() {
       <PageHeader title="Subscriptions" subtitle="Recurring paid services."
         actions={!formOpen && <Button onClick={() => { setShowForm(true); setEditing(null); }}>Add subscription</Button>} />
 
+      {pending && (
+        <OverrideConfirm count={pending.count} months={pending.months} busy={mUpdate.isPending}
+          onOverwrite={() => submitUpdate(pending.payload, "overwrite")}
+          onKeep={() => submitUpdate(pending.payload, "keep")}
+          onCancel={() => setPending(null)} />
+      )}
+
       {formOpen && (
         <Card>
           <form className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={async (e) => {
@@ -104,10 +111,8 @@ function SubscriptionsPage() {
               active: fd.get("active") === "on",
               notes: String(fd.get("notes") || "") || null,
             };
-            try {
-              if (editing) await mUpdate.mutateAsync({ data: { ...payload, id: editing.id } });
-              else await mCreate.mutateAsync({ data: payload });
-            } catch {/* toast handled in onError */}
+            if (editing) { await submitUpdate({ ...payload, id: editing.id }); return; }
+            try { await mCreate.mutateAsync({ data: payload }); } catch {/* toast handled in onError */}
           }}>
             <Field label="Name"><TextInput name="name" defaultValue={initial.name} required /></Field>
             <Field label="Amount"><TextInput type="number" step="0.01" name="amount" defaultValue={String(initial.amount ?? 0)} required /></Field>

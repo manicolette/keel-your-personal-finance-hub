@@ -78,7 +78,7 @@ function MonthlyExpensesPage() {
         return;
       }
       setPending(null);
-      toast.success(`Saved — applied to this month and ${Math.max(res.updated_months - 1, 0) > 0 ? "future months" : "all future months"}`);
+      toast.success("Saved — applied to this month and future months");
       await invalidate();
       setEditing(null);
     } catch { /* toast shown in onError; form stays open with your values */ }
