@@ -279,6 +279,22 @@ ALTER TABLE transactions ADD COLUMN IF NOT EXISTS goal_id uuid REFERENCES goals(
 CREATE INDEX IF NOT EXISTS tx_goal_idx ON transactions(goal_id);
 CREATE INDEX IF NOT EXISTS tx_account_idx ON transactions(account_id);
 CREATE INDEX IF NOT EXISTS tx_transfer_account_idx ON transactions(transfer_account_id);
+
+-- Additive: debt interest model. The balance is recomputed from a known "anchor" balance
+-- (what the statement said on anchor_date) plus payments logged after it, with daily interest.
+ALTER TABLE debts ADD COLUMN IF NOT EXISTS promo_apr numeric(6,3);
+ALTER TABLE debts ADD COLUMN IF NOT EXISTS promo_end_date date;
+ALTER TABLE debts ADD COLUMN IF NOT EXISTS extra_payment numeric(14,2) NOT NULL DEFAULT 0;
+ALTER TABLE debts ADD COLUMN IF NOT EXISTS anchor_balance numeric(14,2);
+ALTER TABLE debts ADD COLUMN IF NOT EXISTS anchor_date date;
+ALTER TABLE debts ADD COLUMN IF NOT EXISTS anchor_set_at timestamptz;
+ALTER TABLE debts ADD COLUMN IF NOT EXISTS balance_as_of date;
+UPDATE debts d SET
+  anchor_balance = d.balance,
+  anchor_date = GREATEST(CURRENT_DATE, COALESCE((SELECT MAX(p.payment_date) FROM debt_payments p WHERE p.debt_id = d.id), CURRENT_DATE)),
+  anchor_set_at = now(),
+  balance_as_of = GREATEST(CURRENT_DATE, COALESCE((SELECT MAX(p.payment_date) FROM debt_payments p WHERE p.debt_id = d.id), CURRENT_DATE))
+WHERE d.anchor_balance IS NULL;
 `;
 
 export function ensureSchema(): Promise<void> {
@@ -287,7 +303,7 @@ export function ensureSchema(): Promise<void> {
   _schemaReady = (async () => {
     // neon's serverless client supports .query for raw multi-statement text.
     // But the tagged template only takes a single statement, so split manually.
-    const statements = SCHEMA_SQL.split(/;\s*(?=CREATE|ALTER|INSERT|DROP|--)/i)
+    const statements = SCHEMA_SQL.split(/;\s*(?=CREATE|ALTER|INSERT|UPDATE|DROP|--)/i)
       .map((s) => s.replace(/^\s*(--[^\n]*\n)+/g, "").trim())
       .filter(Boolean);
     for (const stmt of statements) {

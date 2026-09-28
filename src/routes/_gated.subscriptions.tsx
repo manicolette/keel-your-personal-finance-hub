@@ -97,7 +97,7 @@ function SubscriptionsPage() {
 
       {formOpen && (
         <Card>
-          <form className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={async (e) => {
+          <form key={editing?.id ?? "new"} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={async (e) => {
             e.preventDefault();
             const fd = new FormData(e.currentTarget);
             const payload = {

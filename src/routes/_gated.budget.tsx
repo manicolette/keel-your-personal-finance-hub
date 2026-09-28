@@ -31,7 +31,11 @@ const catsQueryOptions = queryOptions({ queryKey: ["categories"], queryFn: () =>
 const acctsQueryOptions = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
 
 
-const currentMonth = () => new Date().toISOString().slice(0, 7);
+// Local month, matching the Monthly Expenses and Subscriptions pages (UTC would flip to next month on evenings at month end).
+const currentMonth = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
 const shiftMonth = (m: string, delta: number) => {
   const [y, mm] = m.split("-").map(Number);
   const d = new Date(Date.UTC(y, mm - 1 + delta, 1));

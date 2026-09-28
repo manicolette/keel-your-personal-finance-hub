@@ -17,8 +17,17 @@ import {
   type Debt,
   type DebtPayment,
 } from "@/lib/keel.functions";
-import { computePayoff } from "@/lib/payoff";
-import { Button, Card, EmptyState, Field, PageHeader, Select, TextInput, Textarea, money } from "@/components/keel-ui";
+import {
+  accruedSince,
+  buildSchedule,
+  firstPaymentMonth,
+  simulateStrategy,
+  todayIso,
+  type DebtTerms,
+  type Schedule,
+  type StrategyResult,
+} from "@/lib/payoff";
+import { Button, Card, EmptyState, Field, PageHeader, Select, Table, Td, TextInput, Textarea, Th, money } from "@/components/keel-ui";
 
 const debtsQuery = queryOptions({ queryKey: ["debts"], queryFn: () => listDebts() });
 const acctQuery = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
@@ -36,7 +45,24 @@ export const Route = createFileRoute("/_gated/debts")({
   errorComponent: ({ error }) => <div role="alert" className="text-sm text-destructive">{error.message}</div>,
 });
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => todayIso();
+
+const termsOf = (d: Debt, extra?: number): DebtTerms => ({
+  balance: d.balance,
+  apr: d.apr,
+  minPayment: d.min_payment,
+  extraPayment: extra ?? d.extra_payment,
+  promoApr: d.promo_apr,
+  promoEndDate: d.promo_end_date,
+});
+
+const fmtMonth = (ym: string | null) =>
+  ym ? new Date(`${ym}-01T00:00:00Z`).toLocaleDateString(undefined, { month: "short", year: "numeric", timeZone: "UTC" }) : "—";
+const fmtDuration = (m: number) => {
+  const y = Math.floor(m / 12);
+  const r = m % 12;
+  return y === 0 ? `${r} mo` : r === 0 ? `${y} yr` : `${y} yr ${r} mo`;
+};
 
 function DebtsPage() {
   const { data: debts } = useSuspenseQuery(debtsQuery);
@@ -50,6 +76,7 @@ function DebtsPage() {
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["debts"] });
     qc.invalidateQueries({ queryKey: ["dashboard"] });
+    qc.invalidateQueries({ queryKey: ["networth-live"] });
   };
 
   const mCreate = useMutation({ mutationFn: create,
@@ -63,8 +90,8 @@ function DebtsPage() {
     onError: (e: Error) => toast.error(e.message) });
 
   const initial: Partial<Debt> = editing ?? {
-    name: "", balance: 0, min_payment: 0, apr: 0, due_day: null, currency: "USD", notes: "",
-    original_balance: null, start_date: null,
+    name: "", balance: 0, min_payment: 0, extra_payment: 0, apr: 0, promo_apr: null, promo_end_date: null,
+    due_day: null, currency: "USD", notes: "", original_balance: null, start_date: null, balance_as_of: today(),
   };
   const formOpen = showForm || !!editing;
 
@@ -74,34 +101,56 @@ function DebtsPage() {
   return (
     <div className="space-y-5">
       <PageHeader title="Debts"
+        subtitle="Balances accrue interest daily between payments. Projections use standard monthly amortization."
         actions={!formOpen && <Button onClick={() => { setShowForm(true); setEditing(null); }}>Add debt</Button>} />
 
       {formOpen && (
         <Card>
-          <form className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={(e) => {
+          <form key={editing?.id ?? "new"} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={(e) => {
             e.preventDefault();
             const fd = new FormData(e.currentTarget);
-            const dueRaw = String(fd.get("due_day") || "");
-            const origRaw = String(fd.get("original_balance") || "");
-            const startRaw = String(fd.get("start_date") || "");
+            const str = (k: string) => String(fd.get(k) || "").trim();
+            const numOrNull = (k: string) => (str(k) === "" ? null : Number(str(k)));
             const payload = {
-              name: String(fd.get("name") || ""),
-              balance: Number(fd.get("balance") || 0),
-              min_payment: Number(fd.get("min_payment") || 0),
-              apr: Number(fd.get("apr") || 0),
-              due_day: dueRaw ? Number(dueRaw) : null,
-              currency: String(fd.get("currency") || "USD"),
-              notes: String(fd.get("notes") || "") || null,
-              original_balance: origRaw ? Number(origRaw) : null,
-              start_date: startRaw || null,
+              name: str("name"),
+              balance: Number(str("balance") || 0),
+              balance_as_of: str("balance_as_of") || null,
+              min_payment: Number(str("min_payment") || 0),
+              extra_payment: Number(str("extra_payment") || 0),
+              apr: Number(str("apr") || 0),
+              promo_apr: numOrNull("promo_apr"),
+              promo_end_date: str("promo_end_date") || null,
+              due_day: numOrNull("due_day"),
+              currency: str("currency") || "USD",
+              notes: str("notes") || null,
+              original_balance: numOrNull("original_balance"),
+              start_date: str("start_date") || null,
             };
+            if ((payload.promo_apr == null) !== (payload.promo_end_date == null)) {
+              toast.error("Enter both a promo APR and the date the promo ends, or leave both blank.");
+              return;
+            }
             if (editing) mUpdate.mutate({ data: { ...payload, id: editing.id } });
             else mCreate.mutate({ data: payload });
           }}>
             <Field label="Name"><TextInput name="name" defaultValue={initial.name} required /></Field>
-            <Field label="Current balance"><TextInput type="number" step="0.01" name="balance" defaultValue={String(initial.balance ?? 0)} /></Field>
-            <Field label="Min payment"><TextInput type="number" step="0.01" name="min_payment" defaultValue={String(initial.min_payment ?? 0)} /></Field>
-            <Field label="APR %"><TextInput type="number" step="0.001" name="apr" defaultValue={String(initial.apr ?? 0)} /></Field>
+            <Field label="Current balance" hint="From your latest statement or account page">
+              <TextInput type="number" step="0.01" min={0} name="balance" defaultValue={String(initial.balance ?? 0)} />
+            </Field>
+            <Field label="Balance as of" hint="Payments you log after this date reduce it">
+              <TextInput type="date" name="balance_as_of" defaultValue={initial.balance_as_of ?? today()} />
+            </Field>
+            <Field label="APR %"><TextInput type="number" step="0.001" min={0} name="apr" defaultValue={String(initial.apr ?? 0)} /></Field>
+            <Field label="Min payment"><TextInput type="number" step="0.01" min={0} name="min_payment" defaultValue={String(initial.min_payment ?? 0)} /></Field>
+            <Field label="Extra per month (optional)" hint="Planned on top of the minimum">
+              <TextInput type="number" step="0.01" min={0} name="extra_payment" defaultValue={initial.extra_payment ? String(initial.extra_payment) : ""} />
+            </Field>
+            <Field label="Promo APR % (optional)" hint="e.g. 0 for a 0% balance transfer">
+              <TextInput type="number" step="0.001" min={0} name="promo_apr" defaultValue={initial.promo_apr ?? ""} />
+            </Field>
+            <Field label="Promo ends (optional)" hint="Regular APR applies from this date">
+              <TextInput type="date" name="promo_end_date" defaultValue={initial.promo_end_date ?? ""} />
+            </Field>
             <Field label="Due day (1-31)"><TextInput type="number" min={1} max={31} name="due_day" defaultValue={initial.due_day ?? ""} /></Field>
             <Field label="Currency"><TextInput name="currency" defaultValue={initial.currency} /></Field>
             <Field label="Original balance (optional)" hint="Starting amount when you began paying">
@@ -120,6 +169,8 @@ function DebtsPage() {
           </form>
         </Card>
       )}
+
+      {active.length >= 2 && <StrategyCard debts={active} />}
 
       {active.length === 0 && paid.length === 0 ? <EmptyState>No debts tracked.</EmptyState> : (
         <div className="space-y-3">
@@ -144,18 +195,97 @@ function DebtsPage() {
   );
 }
 
-function DebtRow({ debt, onEdit, onDelete }: { debt: Debt; onEdit: () => void; onDelete: () => void }) {
-  const [extra, setExtra] = useState<number>(0);
-  const [showPayments, setShowPayments] = useState(false);
-  const base = computePayoff(debt.balance, debt.apr, debt.min_payment);
-  const sim = computePayoff(debt.balance, debt.apr, debt.min_payment + (extra || 0));
-  const savedInterest = base.months != null && sim.months != null ? Math.max(0, base.totalInterest - sim.totalInterest) : 0;
-  const savedMonths = base.months != null && sim.months != null ? Math.max(0, base.months - sim.months) : 0;
-  const fmtDate = (iso: string | null) => iso ? new Date(iso + "T00:00:00Z").toLocaleDateString(undefined, { month: "short", year: "numeric" }) : "—";
+function StrategyCard({ debts }: { debts: Debt[] }) {
+  const [extra, setExtra] = useState<number>(() => debts.reduce((s, d) => s + d.extra_payment, 0));
+  const currency = debts[0]?.currency ?? "USD";
+  const mixedCurrency = debts.some((d) => d.currency !== currency);
+  const start = firstPaymentMonth(null);
+  const input = debts.map((d) => ({ ...termsOf(d, 0), id: d.id, name: d.name }));
+  const results: StrategyResult[] = [
+    simulateStrategy(input, 0, "minimums", start),
+    simulateStrategy(input, extra, "avalanche", start),
+    simulateStrategy(input, extra, "snowball", start),
+  ];
+  const label = { minimums: "Minimums only", avalanche: "Avalanche (highest APR first)", snowball: "Snowball (smallest balance first)" };
+  const totalMin = debts.reduce((s, d) => s + d.min_payment, 0);
+  const best = results[1].totalInterest <= results[2].totalInterest ? "avalanche" : "snowball";
 
-  const showProgress = debt.original_balance != null && debt.start_date != null && debt.original_balance > 0;
-  const paid = showProgress ? Math.max(0, (debt.original_balance ?? 0) - debt.balance) : 0;
-  const pct = showProgress ? Math.min(100, Math.round((paid / (debt.original_balance ?? 1)) * 100)) : 0;
+  return (
+    <Card>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold">Payoff strategy</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Pays every minimum ({money(totalMin, currency)}/mo), then puts the extra amount, plus each paid-off debt's minimum, toward one debt at a time.
+          </p>
+        </div>
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="font-medium">Extra per month</span>
+          <TextInput type="number" step="0.01" min={0} value={extra || ""} placeholder="0"
+            onChange={(e) => setExtra(Math.max(0, Number(e.target.value) || 0))} className="w-32" />
+        </label>
+      </div>
+      {mixedCurrency && <p className="mt-2 text-xs text-destructive">Your debts use different currencies, so these combined totals mix them.</p>}
+      <div className="mt-3">
+        <Table head={<><Th>Plan</Th><Th>Debt free</Th><Th className="text-right">Total interest</Th><Th>Payoff order</Th></>}>
+          {results.map((r) => (
+            <tr key={r.strategy} className={r.strategy === best && extra > 0 ? "bg-[color:var(--positive)]/5" : ""}>
+              <Td className="font-medium">{label[r.strategy]}</Td>
+              <Td className="tabular-nums">
+                {r.neverPaysOff ? <span className="text-destructive">Never at these payments</span>
+                  : `${fmtMonth(r.debtFreeMonth)} (${fmtDuration(r.months ?? 0)})`}
+              </Td>
+              <Td className="text-right tabular-nums">{r.neverPaysOff ? "—" : money(r.totalInterest, currency)}</Td>
+              <Td className="text-xs text-muted-foreground">
+                {r.order.map((o) => `${o.name} (${fmtMonth(o.payoffMonth)})`).join(" → ")}
+              </Td>
+            </tr>
+          ))}
+        </Table>
+      </div>
+      {extra > 0 && !results[1].neverPaysOff && !results[2].neverPaysOff && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Avalanche saves {money(Math.max(0, results[2].totalInterest - results[1].totalInterest), currency)} in interest compared to snowball.
+          {!results[0].neverPaysOff && <> Either one saves {money(Math.max(0, results[0].totalInterest - Math.max(results[1].totalInterest, results[2].totalInterest)), currency)} or more compared to paying minimums only.</>}
+        </p>
+      )}
+    </Card>
+  );
+}
+
+function ProjectionLine({ label, sched, currency }: { label: string; sched: Schedule; currency: string }) {
+  return (
+    <div className="text-xs">
+      <span className="text-muted-foreground">{label}: </span>
+      {sched.neverPaysOff ? (
+        <span className="font-medium text-destructive">
+          This payment does not reduce the balance.
+          {sched.shortfall && <> Interest is about {money(sched.shortfall.monthlyInterest, currency)}/mo and the payment is {money(sched.shortfall.payment, currency)}.</>}
+        </span>
+      ) : (
+        <span className="tabular-nums font-medium">
+          {fmtMonth(sched.payoffMonth)} ({fmtDuration(sched.months ?? 0)}), total interest {money(sched.totalInterest, currency)}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function DebtRow({ debt, onEdit, onDelete }: { debt: Debt; onEdit: () => void; onDelete: () => void }) {
+  const [extra, setExtra] = useState<number>(debt.extra_payment);
+  const [showPayments, setShowPayments] = useState(false);
+  const [showSchedule, setShowSchedule] = useState(false);
+  const start = firstPaymentMonth(debt.due_day);
+  const base = buildSchedule(termsOf(debt, 0), start);
+  const sim = buildSchedule(termsOf(debt, extra), start);
+  const cur = debt.currency;
+  const accrued = debt.balance_as_of && !debt.paid_off_at ? accruedSince(debt.balance, debt.balance_as_of, today(), { apr: debt.apr, promoApr: debt.promo_apr, promoEndDate: debt.promo_end_date }) : 0;
+  const promoActive = debt.promo_apr != null && debt.promo_end_date != null && today() < debt.promo_end_date;
+
+  const showProgress = debt.original_balance != null && debt.original_balance > 0;
+  const paidAmt = showProgress ? Math.max(0, (debt.original_balance ?? 0) - debt.balance) : 0;
+  const pct = showProgress ? Math.min(100, Math.round((paidAmt / (debt.original_balance ?? 1)) * 100)) : 0;
+  const canCompare = extra > 0 && !base.neverPaysOff && !sim.neverPaysOff;
 
   return (
     <Card>
@@ -168,16 +298,27 @@ function DebtRow({ debt, onEdit, onDelete }: { debt: Debt; onEdit: () => void; o
                 PAID OFF {debt.paid_off_at}
               </span>
             )}
+            {promoActive && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {debt.promo_apr}% UNTIL {debt.promo_end_date}
+              </span>
+            )}
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            {money(debt.balance, debt.currency)} @ {debt.apr}% · min {money(debt.min_payment, debt.currency)}
+            {money(debt.balance, cur)} @ {debt.apr}% · min {money(debt.min_payment, cur)}
             {debt.due_day ? ` · due day ${debt.due_day}` : ""}
+            {debt.balance_as_of ? ` · as of ${debt.balance_as_of}` : ""}
           </div>
+          {accrued >= 0.01 && (
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              About {money(accrued, cur)} interest has built up since then (payoff amount today ≈ {money(debt.balance + accrued, cur)}).
+            </div>
+          )}
           {showProgress && (
             <div className="mt-2">
               <div className="mb-1 flex justify-between text-xs">
                 <span className="text-muted-foreground">
-                  {money(paid, debt.currency)} of {money(debt.original_balance ?? 0, debt.currency)} paid ({pct}%)
+                  {money(paidAmt, cur)} of {money(debt.original_balance ?? 0, cur)} paid ({pct}%)
                 </span>
                 {debt.start_date && <span className="text-muted-foreground">since {debt.start_date}</span>}
               </div>
@@ -186,15 +327,7 @@ function DebtRow({ debt, onEdit, onDelete }: { debt: Debt; onEdit: () => void; o
               </div>
             </div>
           )}
-          {!debt.paid_off_at && (
-            <div className="mt-2 text-xs">
-              <span className="text-muted-foreground">Payoff (min only): </span>
-              <span className="tabular-nums font-medium">
-                {base.months == null ? "never — payment doesn't cover interest" :
-                  `${base.months} mo (${fmtDate(base.payoffDate)}), interest ${money(base.totalInterest, debt.currency)}`}
-              </span>
-            </div>
-          )}
+          {!debt.paid_off_at && <div className="mt-2"><ProjectionLine label="Payoff at minimum" sched={base} currency={cur} /></div>}
         </div>
         <div className="flex gap-1">
           <Button size="sm" variant="outline" onClick={() => setShowPayments(!showPayments)}>{showPayments ? "Hide" : "Payments"}</Button>
@@ -209,24 +342,48 @@ function DebtRow({ debt, onEdit, onDelete }: { debt: Debt; onEdit: () => void; o
             <label className="flex flex-col gap-1 text-xs">
               <span className="font-medium">Extra per month</span>
               <TextInput type="number" step="0.01" min={0} value={extra || ""} placeholder="0"
-                onChange={(e) => setExtra(Number(e.target.value) || 0)} className="w-32" />
+                onChange={(e) => setExtra(Math.max(0, Number(e.target.value) || 0))} className="w-32" />
             </label>
-            <div className="text-xs text-muted-foreground">
-              Paying <span className="tabular-nums font-medium text-foreground">{money(debt.min_payment + (extra || 0), debt.currency)}</span>/mo →
-              {sim.months == null ? " never pays off" :
-                <> pays off in <span className="tabular-nums font-medium text-foreground">{sim.months} mo</span> ({fmtDate(sim.payoffDate)}), interest <span className="tabular-nums font-medium text-foreground">{money(sim.totalInterest, debt.currency)}</span></>}
-              {extra > 0 && sim.months != null && base.months != null && (
-                <div className="mt-1 text-[color:var(--positive)]">
-                  Save {money(savedInterest, debt.currency)} in interest, {savedMonths} months sooner.
+            <div className="flex-1 space-y-1">
+              <ProjectionLine label={`Paying ${money(debt.min_payment + extra, cur)}/mo`} sched={sim} currency={cur} />
+              {canCompare && (
+                <div className="text-xs text-[color:var(--positive)]">
+                  Saves {money(Math.max(0, base.totalInterest - sim.totalInterest), cur)} in interest and {fmtDuration(Math.max(0, (base.months ?? 0) - (sim.months ?? 0)))} compared to the minimum.
                 </div>
               )}
             </div>
+            <Button size="sm" variant="ghost" onClick={() => setShowSchedule(!showSchedule)}>
+              {showSchedule ? "Hide schedule" : "Show schedule"}
+            </Button>
           </div>
+          {showSchedule && <ScheduleTable sched={sim} currency={cur} />}
         </div>
       )}
 
       {showPayments && <PaymentsPanel debtId={debt.id} debtName={debt.name} debtCurrency={debt.currency} />}
     </Card>
+  );
+}
+
+function ScheduleTable({ sched, currency }: { sched: Schedule; currency: string }) {
+  if (sched.rows.length === 0) return null;
+  const rows = sched.neverPaysOff ? sched.rows.slice(0, 24) : sched.rows;
+  return (
+    <div className="mt-3 max-h-80 overflow-auto">
+      <Table head={<><Th>Month</Th><Th className="text-right">Start</Th><Th className="text-right">Interest</Th><Th className="text-right">Payment</Th><Th className="text-right">Principal</Th><Th className="text-right">End</Th></>}>
+        {rows.map((r) => (
+          <tr key={r.month}>
+            <Td className="text-xs">{fmtMonth(r.month)}</Td>
+            <Td className="text-right text-xs tabular-nums">{money(r.startBalance, currency)}</Td>
+            <Td className="text-right text-xs tabular-nums">{money(r.interest, currency)}</Td>
+            <Td className="text-right text-xs tabular-nums">{money(r.payment, currency)}</Td>
+            <Td className={`text-right text-xs tabular-nums ${r.principal < 0 ? "text-destructive" : ""}`}>{money(r.principal, currency)}</Td>
+            <Td className="text-right text-xs tabular-nums">{money(Math.max(0, r.endBalance), currency)}</Td>
+          </tr>
+        ))}
+      </Table>
+      {sched.neverPaysOff && <p className="mt-1 text-xs text-destructive">Showing the first 24 months. The balance keeps growing at this payment.</p>}
+    </div>
   );
 }
 

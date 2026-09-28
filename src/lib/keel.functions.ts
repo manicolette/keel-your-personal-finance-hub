@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { db } from "./db.server";
 import { requireUnlocked } from "./session.server";
+import { replayBalance } from "./payoff";
 
 // -------------------------- Types --------------------------
 export type Account = {
@@ -104,6 +105,10 @@ export type Debt = {
   original_balance: number | null;
   start_date: string | null;
   paid_off_at: string | null;
+  promo_apr: number | null;
+  promo_end_date: string | null;
+  extra_payment: number;
+  balance_as_of: string | null; // date the balance figure is accurate as of (last payment or statement)
 };
 export type DebtPayment = {
   id: string;
@@ -1095,11 +1100,21 @@ export const payExpenseDirect = createServerFn({ method: "POST" })
 
 
 // -------------------------- Debts --------------------------
+// How balances work:
+// - When you enter or change a debt's balance, that figure is saved as the "anchor" with the
+//   date it's accurate as of (balance_as_of in the form, default today).
+// - The live balance is always recomputed from the anchor: interest accrues daily at the APR
+//   (or promo APR) between payments, and each payment logged after the anchor reduces it.
+// - Editing or deleting a payment, or changing the APR, just recomputes from the anchor.
 const debtInput = z.object({
   name: z.string().min(1).max(80),
-  balance: z.coerce.number().default(0),
-  min_payment: z.coerce.number().default(0),
-  apr: z.coerce.number().default(0),
+  balance: z.coerce.number().min(0).default(0),
+  balance_as_of: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  min_payment: z.coerce.number().min(0).default(0),
+  extra_payment: z.coerce.number().min(0).default(0),
+  apr: z.coerce.number().min(0).max(100).default(0),
+  promo_apr: z.coerce.number().min(0).max(100).nullable().optional(),
+  promo_end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   due_day: z.coerce.number().int().min(1).max(31).nullable().optional(),
   currency: z.string().min(1).max(8).default("USD"),
   notes: z.string().max(500).nullable().optional(),
@@ -1107,10 +1122,39 @@ const debtInput = z.object({
   start_date: z.string().nullable().optional(),
 });
 
+const round2 = (x: number) => Math.round(x * 100) / 100;
+
+async function recomputeDebt(sql: any, debtId: string) {
+  const rows = (await sql`
+    SELECT balance, anchor_balance, anchor_date, apr, promo_apr, promo_end_date, paid_off_at
+    FROM debts WHERE id = ${debtId}`) as any[];
+  if (rows.length === 0) return;
+  const r = rows[0];
+  const anchorDate = dOrNull(r.anchor_date) ?? new Date().toISOString().slice(0, 10);
+  const pays = (await sql`
+    SELECT p.amount, p.payment_date FROM debt_payments p JOIN debts dd ON dd.id = p.debt_id
+    WHERE p.debt_id = ${debtId}
+      AND (p.payment_date > dd.anchor_date
+           OR (p.payment_date = dd.anchor_date AND p.created_at > dd.anchor_set_at))
+    ORDER BY p.payment_date, p.created_at`) as any[];
+  const res = replayBalance(
+    n(r.anchor_balance ?? r.balance),
+    anchorDate,
+    pays.map((p) => ({ amount: n(p.amount), date: d(p.payment_date) })),
+    { apr: n(r.apr), promoApr: r.promo_apr == null ? null : n(r.promo_apr), promoEndDate: dOrNull(r.promo_end_date) },
+  );
+  const bal = Math.max(0, round2(res.balance));
+  const paidOff = bal <= 0 ? (dOrNull(r.paid_off_at) ?? res.paidOffOn ?? res.asOf) : null;
+  await sql`UPDATE debts SET balance = ${bal}, balance_as_of = ${res.asOf}, paid_off_at = ${paidOff} WHERE id = ${debtId}`;
+}
+
 export const listDebts = createServerFn({ method: "GET" }).handler(async () => {
   await requireUnlocked();
   const sql = await db();
-  const rows = (await sql`SELECT id, name, balance, min_payment, apr, due_day, currency, notes, original_balance, start_date, paid_off_at FROM debts ORDER BY paid_off_at NULLS FIRST, name`) as any[];
+  const rows = (await sql`
+    SELECT id, name, balance, min_payment, apr, due_day, currency, notes, original_balance, start_date, paid_off_at,
+           promo_apr, promo_end_date, extra_payment, balance_as_of
+    FROM debts ORDER BY paid_off_at NULLS FIRST, name`) as any[];
   return rows.map((r) => ({
     ...r,
     balance: n(r.balance),
@@ -1120,6 +1164,10 @@ export const listDebts = createServerFn({ method: "GET" }).handler(async () => {
     original_balance: r.original_balance == null ? null : n(r.original_balance),
     start_date: dOrNull(r.start_date),
     paid_off_at: dOrNull(r.paid_off_at),
+    promo_apr: r.promo_apr == null ? null : n(r.promo_apr),
+    promo_end_date: dOrNull(r.promo_end_date),
+    extra_payment: n(r.extra_payment),
+    balance_as_of: dOrNull(r.balance_as_of),
   })) as Debt[];
 });
 
@@ -1128,11 +1176,21 @@ export const createDebt = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
-    const rows = (await sql`
-      INSERT INTO debts (name, balance, min_payment, apr, due_day, currency, notes, original_balance, start_date)
-      VALUES (${data.name}, ${data.balance}, ${data.min_payment}, ${data.apr}, ${data.due_day ?? null}, ${data.currency}, ${data.notes ?? null}, ${data.original_balance ?? null}, ${data.start_date || null})
-      RETURNING id`) as any[];
-    return { id: rows[0].id as string };
+    try {
+      const asOf = data.balance_as_of || new Date().toISOString().slice(0, 10);
+      const rows = (await sql`
+        INSERT INTO debts (name, balance, min_payment, extra_payment, apr, promo_apr, promo_end_date, due_day, currency, notes,
+                           original_balance, start_date, anchor_balance, anchor_date, anchor_set_at, balance_as_of)
+        VALUES (${data.name}, ${data.balance}, ${data.min_payment}, ${data.extra_payment}, ${data.apr},
+                ${data.promo_apr ?? null}, ${data.promo_end_date || null}, ${data.due_day ?? null}, ${data.currency},
+                ${data.notes ?? null}, ${data.original_balance ?? null}, ${data.start_date || null},
+                ${data.balance}, ${asOf}, now(), ${asOf})
+        RETURNING id`) as any[];
+      await recomputeDebt(sql, rows[0].id);
+      return { id: rows[0].id as string };
+    } catch (err) {
+      throw new Error(`Failed to save debt: ${(err as Error).message}`);
+    }
   });
 
 export const updateDebt = createServerFn({ method: "POST" })
@@ -1140,12 +1198,30 @@ export const updateDebt = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
-    await sql`
-      UPDATE debts SET name = ${data.name}, balance = ${data.balance}, min_payment = ${data.min_payment},
-        apr = ${data.apr}, due_day = ${data.due_day ?? null}, currency = ${data.currency}, notes = ${data.notes ?? null},
-        original_balance = ${data.original_balance ?? null}, start_date = ${data.start_date || null}
-      WHERE id = ${data.id}`;
-    return { ok: true };
+    try {
+      const cur = (await sql`SELECT balance, balance_as_of FROM debts WHERE id = ${data.id}`) as any[];
+      if (cur.length === 0) throw new Error("This debt no longer exists.");
+      const curAsOf = dOrNull(cur[0].balance_as_of);
+      const newAsOf = data.balance_as_of || null;
+      // A changed balance or as-of date means "this is the real balance now": reset the anchor.
+      const resetAnchor = round2(data.balance) !== round2(n(cur[0].balance)) || (newAsOf != null && newAsOf !== curAsOf);
+      await sql`
+        UPDATE debts SET name = ${data.name}, min_payment = ${data.min_payment}, extra_payment = ${data.extra_payment},
+          apr = ${data.apr}, promo_apr = ${data.promo_apr ?? null}, promo_end_date = ${data.promo_end_date || null},
+          due_day = ${data.due_day ?? null}, currency = ${data.currency}, notes = ${data.notes ?? null},
+          original_balance = ${data.original_balance ?? null}, start_date = ${data.start_date || null}
+        WHERE id = ${data.id}`;
+      if (resetAnchor) {
+        const asOf = newAsOf ?? new Date().toISOString().slice(0, 10);
+        await sql`
+          UPDATE debts SET anchor_balance = ${data.balance}, anchor_date = ${asOf}, anchor_set_at = now(), paid_off_at = NULL
+          WHERE id = ${data.id}`;
+      }
+      await recomputeDebt(sql, data.id);
+      return { ok: true };
+    } catch (err) {
+      throw new Error(`Failed to update debt: ${(err as Error).message}`);
+    }
   });
 
 export const deleteDebt = createServerFn({ method: "POST" })
@@ -1173,17 +1249,6 @@ export const listDebtPayments = createServerFn({ method: "GET" })
       note: s(r.note),
     })) as DebtPayment[];
   });
-
-async function recomputePaidOff(sql: any, debtId: string, todayIso: string) {
-  const rows = (await sql`SELECT balance FROM debts WHERE id = ${debtId}`) as any[];
-  if (rows.length === 0) return;
-  const bal = n(rows[0].balance);
-  if (bal <= 0) {
-    await sql`UPDATE debts SET paid_off_at = COALESCE(paid_off_at, ${todayIso}) WHERE id = ${debtId}`;
-  } else {
-    await sql`UPDATE debts SET paid_off_at = NULL WHERE id = ${debtId}`;
-  }
-}
 
 export const createDebtPayment = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) =>
@@ -1217,8 +1282,7 @@ export const createDebtPayment = createServerFn({ method: "POST" })
         INSERT INTO debt_payments (debt_id, amount, payment_date, note, account_id, transaction_id)
         VALUES (${data.debt_id}, ${data.amount}, ${data.payment_date}, ${data.note ?? null}, ${data.account_id ?? null}, ${transactionId})`;
 
-      await sql`UPDATE debts SET balance = balance - ${data.amount} WHERE id = ${data.debt_id}`;
-      await recomputePaidOff(sql, data.debt_id, data.payment_date);
+      await recomputeDebt(sql, data.debt_id);
       return { ok: true };
     } catch (err) {
       throw new Error(`Failed to log payment: ${(err as Error).message}`);
@@ -1237,16 +1301,14 @@ export const updateDebtPayment = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
-    const prev = (await sql`SELECT debt_id, amount, transaction_id FROM debt_payments WHERE id = ${data.id}`) as any[];
+    const prev = (await sql`SELECT debt_id, transaction_id FROM debt_payments WHERE id = ${data.id}`) as any[];
     if (prev.length === 0) throw new Error("Payment not found");
     const p = prev[0];
-    const delta = data.amount - n(p.amount);
     await sql`UPDATE debt_payments SET amount = ${data.amount}, payment_date = ${data.payment_date}, note = ${data.note ?? null} WHERE id = ${data.id}`;
-    if (delta !== 0) await sql`UPDATE debts SET balance = balance - ${delta} WHERE id = ${p.debt_id}`;
     if (p.transaction_id) {
       await sql`UPDATE transactions SET amount = ${data.amount}, on_date = ${data.payment_date} WHERE id = ${p.transaction_id}`;
     }
-    await recomputePaidOff(sql, p.debt_id, data.payment_date);
+    await recomputeDebt(sql, p.debt_id);
     return { ok: true };
   });
 
@@ -1255,13 +1317,12 @@ export const deleteDebtPayment = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
-    const prev = (await sql`SELECT debt_id, amount, transaction_id, payment_date FROM debt_payments WHERE id = ${data.id}`) as any[];
+    const prev = (await sql`SELECT debt_id, transaction_id FROM debt_payments WHERE id = ${data.id}`) as any[];
     if (prev.length === 0) return { ok: true };
     const p = prev[0];
     await sql`DELETE FROM debt_payments WHERE id = ${data.id}`;
-    await sql`UPDATE debts SET balance = balance + ${n(p.amount)} WHERE id = ${p.debt_id}`;
     if (p.transaction_id) await sql`DELETE FROM transactions WHERE id = ${p.transaction_id}`;
-    await recomputePaidOff(sql, p.debt_id, d(p.payment_date));
+    await recomputeDebt(sql, p.debt_id);
     return { ok: true };
   });
 
