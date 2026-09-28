@@ -190,6 +190,8 @@ export type MonthlyExpense = {
 export type MonthlyExpenseInstance = {
   id: string;
   monthly_expense_id: string | null;
+  subscription_id: string | null;
+  amount_overridden: boolean;
   month: string;
   name: string;
   category_id: string | null;
@@ -475,18 +477,59 @@ export const createSubscription = createServerFn({ method: "POST" })
   });
 
 export const updateSubscription = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => subInput.extend({ id: z.string().uuid() }).parse(data))
-  .handler(async ({ data }) => {
+  .inputValidator((data: unknown) =>
+    subInput.extend({
+      id: z.string().uuid(),
+      from_month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+      override_policy: z.enum(["overwrite", "keep"]).optional(),
+    }).parse(data),
+  )
+  .handler(async ({ data }): Promise<PropagateResult> => {
     await requireUnlocked();
     const sql = await db();
+    const from = `${data.from_month ?? new Date().toISOString().slice(0, 7)}-01`;
+    const monthly = Math.round(
+      (data.frequency === "weekly" ? (data.amount * 52) / 12
+        : data.frequency === "quarterly" ? data.amount / 3
+        : data.frequency === "yearly" ? data.amount / 12
+        : data.amount) * 100,
+    ) / 100;
     try {
+      const exists = (await sql`SELECT 1 FROM subscriptions WHERE id = ${data.id}`) as any[];
+      if (exists.length === 0) throw new Error("This subscription no longer exists.");
+
+      const conflicts = (await sql`
+        SELECT month FROM monthly_expense_instances
+        WHERE subscription_id = ${data.id} AND month >= ${from}::date
+          AND amount_overridden = true AND planned_amount <> ${monthly}
+        ORDER BY month`) as any[];
+      if (conflicts.length > 0 && !data.override_policy) {
+        return { ok: false, needs_confirm: true, overridden_count: conflicts.length, overridden_months: conflicts.map((r) => d(r.month).slice(0, 7)) };
+      }
+      const overwrite = data.override_policy === "overwrite";
+
       await sql`
         UPDATE subscriptions SET name = ${data.name}, amount = ${data.amount}, currency = ${data.currency},
           frequency = ${data.frequency}, next_charge_date = ${data.next_charge_date},
           account_id = ${data.account_id ?? null}, category_id = ${data.category_id ?? null},
           active = ${data.active}, notes = ${data.notes ?? null}
         WHERE id = ${data.id}`;
-      return { ok: true };
+
+      const updated = (await sql`
+        UPDATE monthly_expense_instances SET
+          name_snapshot = ${data.name}, category_id = ${data.category_id ?? null}, currency = ${data.currency},
+          planned_amount = CASE WHEN amount_overridden AND NOT ${overwrite} THEN planned_amount ELSE ${monthly} END,
+          amount_overridden = CASE WHEN ${overwrite} THEN false ELSE amount_overridden END
+        WHERE subscription_id = ${data.id} AND month >= ${from}::date
+        RETURNING id`) as any[];
+
+      if (!data.active) {
+        await sql`
+          DELETE FROM monthly_expense_instances
+          WHERE subscription_id = ${data.id} AND month >= ${from}::date
+            AND status = 'pending' AND transaction_id IS NULL`;
+      }
+      return { ok: true, needs_confirm: false, updated_months: updated.length };
     } catch (err) {
       throw new Error(`Failed to update subscription: ${(err as Error).message}`);
     }
@@ -1606,9 +1649,26 @@ export const getBudget = createServerFn({ method: "GET" })
         AND (me.end_month IS NULL OR me.end_month >= ${monthDate}::date)
       ON CONFLICT (monthly_expense_id, month) WHERE monthly_expense_id IS NOT NULL DO NOTHING`;
 
+    // ---- Subscriptions: materialize at their monthly-equivalent amount ----
+    await sql`
+      INSERT INTO monthly_expense_instances
+        (subscription_id, month, name_snapshot, category_id, planned_amount, currency, status, is_ad_hoc)
+      SELECT s.id, ${monthDate}::date, s.name, s.category_id,
+             ROUND(CASE s.frequency
+               WHEN 'weekly' THEN s.amount * 52 / 12
+               WHEN 'quarterly' THEN s.amount / 3
+               WHEN 'yearly' THEN s.amount / 12
+               ELSE s.amount END, 2),
+             s.currency, 'pending', false
+      FROM subscriptions s
+      WHERE s.active = true
+        AND date_trunc('month', s.created_at)::date <= ${monthDate}::date
+      ON CONFLICT (subscription_id, month) WHERE subscription_id IS NOT NULL DO NOTHING`;
+
     const instanceRows = (await sql`
       SELECT mei.id, mei.monthly_expense_id, mei.month, mei.name_snapshot, mei.category_id,
              mei.planned_amount, mei.currency, mei.status, mei.transaction_id, mei.is_ad_hoc, mei.notes,
+             mei.subscription_id, mei.amount_overridden,
              c.name AS category_name, c.color AS category_color,
              t.amount AS tx_amount, t.on_date AS tx_date
       FROM monthly_expense_instances mei
@@ -1620,6 +1680,8 @@ export const getBudget = createServerFn({ method: "GET" })
     const instances: MonthlyExpenseInstance[] = instanceRows.map((r) => ({
       id: r.id,
       monthly_expense_id: r.monthly_expense_id,
+      subscription_id: r.subscription_id ?? null,
+      amount_overridden: !!r.amount_overridden,
       month: d(r.month),
       name: r.name_snapshot,
       category_id: r.category_id,
@@ -1884,22 +1946,68 @@ export const createMonthlyExpense = createServerFn({ method: "POST" })
     }
   });
 
+export type PropagateResult =
+  | { ok: true; needs_confirm: false; updated_months: number }
+  | { ok: false; needs_confirm: true; overridden_count: number; overridden_months: string[] };
+
+const propagationInput = {
+  from_month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+  override_policy: z.enum(["overwrite", "keep"]).optional(),
+};
+const fromMonthDate = (m?: string) => `${m ?? new Date().toISOString().slice(0, 7)}-01`;
+
 export const updateMonthlyExpense = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => monthlyExpenseInput.extend({ id: z.string().uuid() }).parse(data))
-  .handler(async ({ data }) => {
+  .inputValidator((data: unknown) =>
+    monthlyExpenseInput.extend({ id: z.string().uuid(), ...propagationInput }).parse(data),
+  )
+  .handler(async ({ data }): Promise<PropagateResult> => {
     await requireUnlocked();
     const sql = await db();
+    const from = fromMonthDate(data.from_month);
     try {
+      const exists = (await sql`SELECT 1 FROM monthly_expenses WHERE id = ${data.id}`) as any[];
+      if (exists.length === 0) throw new Error("This monthly expense no longer exists.");
+
+      // 1. Before writing anything, check for manual overrides in current/future months.
+      const conflicts = (await sql`
+        SELECT month FROM monthly_expense_instances
+        WHERE monthly_expense_id = ${data.id} AND month >= ${from}::date
+          AND amount_overridden = true AND planned_amount <> ${data.default_amount}
+        ORDER BY month`) as any[];
+      if (conflicts.length > 0 && !data.override_policy) {
+        return { ok: false, needs_confirm: true, overridden_count: conflicts.length, overridden_months: conflicts.map((r) => d(r.month).slice(0, 7)) };
+      }
+      const overwrite = data.override_policy === "overwrite";
+      const start = monthStartOrNull(data.start_month);
+      const end = monthStartOrNull(data.end_month);
+
+      // 2. Update the definition (drives months not yet materialized).
       await sql`
         UPDATE monthly_expenses SET
           name = ${data.name}, category_id = ${data.category_id ?? null},
           default_amount = ${data.default_amount}, currency = ${data.currency},
-          active = ${data.active},
-          start_month = ${monthStartOrNull(data.start_month)},
-          end_month = ${monthStartOrNull(data.end_month)},
+          active = ${data.active}, start_month = ${start}, end_month = ${end},
           notes = ${data.notes ?? null}, sort_order = ${data.sort_order}
         WHERE id = ${data.id}`;
-      return { ok: true };
+
+      // 3. Push to already-materialized current + future months. Past months untouched.
+      const updated = (await sql`
+        UPDATE monthly_expense_instances SET
+          name_snapshot = ${data.name}, category_id = ${data.category_id ?? null}, currency = ${data.currency},
+          planned_amount = CASE WHEN amount_overridden AND NOT ${overwrite} THEN planned_amount ELSE ${data.default_amount} END,
+          amount_overridden = CASE WHEN ${overwrite} THEN false ELSE amount_overridden END
+        WHERE monthly_expense_id = ${data.id} AND month >= ${from}::date
+        RETURNING id`) as any[];
+
+      // 4. Drop untouched future instances that fall outside the new active window.
+      await sql`
+        DELETE FROM monthly_expense_instances
+        WHERE monthly_expense_id = ${data.id} AND month >= ${from}::date
+          AND status = 'pending' AND transaction_id IS NULL
+          AND (${!data.active} OR (${start}::date IS NOT NULL AND month < ${start}::date)
+               OR (${end}::date IS NOT NULL AND month > ${end}::date))`;
+
+      return { ok: true, needs_confirm: false, updated_months: updated.length };
     } catch (err) {
       throw new Error(`Failed to update monthly expense: ${(err as Error).message}`);
     }
@@ -1925,6 +2033,7 @@ export const listMonthInstances = createServerFn({ method: "GET" })
     const rows = (await sql`
       SELECT mei.id, mei.monthly_expense_id, mei.month, mei.name_snapshot, mei.category_id,
              mei.planned_amount, mei.currency, mei.status, mei.transaction_id, mei.is_ad_hoc, mei.notes,
+             mei.subscription_id, mei.amount_overridden,
              c.name AS category_name, c.color AS category_color,
              t.amount AS tx_amount, t.on_date AS tx_date
       FROM monthly_expense_instances mei
@@ -1935,6 +2044,8 @@ export const listMonthInstances = createServerFn({ method: "GET" })
     return rows.map((r) => ({
       id: r.id,
       monthly_expense_id: r.monthly_expense_id,
+      subscription_id: r.subscription_id ?? null,
+      amount_overridden: !!r.amount_overridden,
       month: d(r.month),
       name: r.name_snapshot,
       category_id: r.category_id,
@@ -1994,9 +2105,11 @@ export const updateInstance = createServerFn({ method: "POST" })
     const categoryId = data.category_id === undefined ? cur[0].category_id : data.category_id;
     const planned = data.planned_amount === undefined ? n(cur[0].planned_amount) : data.planned_amount;
     const notes = data.notes === undefined ? cur[0].notes : data.notes;
+    const overridden = data.planned_amount !== undefined && data.planned_amount !== n(cur[0].planned_amount);
     await sql`
       UPDATE monthly_expense_instances
-      SET name_snapshot = ${name}, category_id = ${categoryId}, planned_amount = ${planned}, notes = ${notes}
+      SET name_snapshot = ${name}, category_id = ${categoryId}, planned_amount = ${planned}, notes = ${notes},
+          amount_overridden = amount_overridden OR ${overridden}
       WHERE id = ${data.id}`;
     return { ok: true };
   });
