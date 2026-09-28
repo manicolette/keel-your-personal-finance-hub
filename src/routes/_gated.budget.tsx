@@ -268,7 +268,9 @@ function InstanceRow({ inst, month, accounts }: { inst: MonthlyExpenseInstance; 
               </button>
             )}
             {inst.is_ad_hoc && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">ONE-OFF</span>}
-            {inst.monthly_expense_id === null && !inst.is_ad_hoc && (
+            {inst.subscription_id && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">SUBSCRIPTION</span>}
+            {inst.amount_overridden && <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-accent-foreground">CHANGED THIS MONTH</span>}
+            {inst.monthly_expense_id === null && !inst.subscription_id && !inst.is_ad_hoc && (
               <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">ORPHANED</span>
             )}
             <StatusBadge status={inst.status} />

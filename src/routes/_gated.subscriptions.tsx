@@ -12,7 +12,7 @@ import {
   updateSubscription,
   type Subscription,
 } from "@/lib/keel.functions";
-import { Button, Card, EmptyState, Field, PageHeader, Select, Table, Td, TextInput, Textarea, Th, money } from "@/components/keel-ui";
+import { Button, Card, EmptyState, Field, OverrideConfirm, PageHeader, Select, Table, Td, TextInput, Textarea, Th, currentMonth, money } from "@/components/keel-ui";
 
 const subsQuery = queryOptions({ queryKey: ["subscriptions"], queryFn: () => listSubscriptions() });
 const acctQuery = queryOptions({ queryKey: ["accounts"], queryFn: () => listAccounts() });
@@ -42,10 +42,12 @@ function SubscriptionsPage() {
   const remove = useServerFn(deleteSubscription);
   const [editing, setEditing] = useState<Subscription | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ["subscriptions"] });
-    qc.invalidateQueries({ queryKey: ["dashboard"] });
-  };
+  const [pending, setPending] = useState<{ payload: any; count: number; months: string[] } | null>(null);
+  const invalidate = () => Promise.all([
+    qc.invalidateQueries({ queryKey: ["subscriptions"] }),
+    qc.invalidateQueries({ queryKey: ["budget"] }),
+    qc.invalidateQueries({ queryKey: ["dashboard"] }),
+  ]);
 
   const mCreate = useMutation({
     mutationFn: create,
@@ -54,9 +56,21 @@ function SubscriptionsPage() {
   });
   const mUpdate = useMutation({
     mutationFn: update,
-    onSuccess: () => { toast.success("Subscription updated"); invalidate(); setEditing(null); },
-    onError: (e: Error) => toast.error(e.message || "Failed to update subscription"),
+    onError: (e: Error) => toast.error(e.message || "Couldn't save — nothing was changed."),
   });
+  const submitUpdate = async (payload: any, override_policy?: "overwrite" | "keep") => {
+    try {
+      const res = await mUpdate.mutateAsync({ data: { ...payload, from_month: currentMonth(), override_policy } });
+      if (res.needs_confirm) {
+        setPending({ payload, count: res.overridden_count, months: res.overridden_months });
+        return;
+      }
+      setPending(null);
+      toast.success("Subscription updated for this month and future months");
+      await invalidate();
+      setEditing(null);
+    } catch { /* toast shown in onError; form keeps your values */ }
+  };
   const mDelete = useMutation({
     mutationFn: remove,
     onSuccess: () => { toast.success("Deleted"); invalidate(); },
@@ -74,6 +88,13 @@ function SubscriptionsPage() {
       <PageHeader title="Subscriptions" subtitle="Recurring paid services."
         actions={!formOpen && <Button onClick={() => { setShowForm(true); setEditing(null); }}>Add subscription</Button>} />
 
+      {pending && (
+        <OverrideConfirm count={pending.count} months={pending.months} busy={mUpdate.isPending}
+          onOverwrite={() => submitUpdate(pending.payload, "overwrite")}
+          onKeep={() => submitUpdate(pending.payload, "keep")}
+          onCancel={() => setPending(null)} />
+      )}
+
       {formOpen && (
         <Card>
           <form className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={async (e) => {
@@ -90,10 +111,8 @@ function SubscriptionsPage() {
               active: fd.get("active") === "on",
               notes: String(fd.get("notes") || "") || null,
             };
-            try {
-              if (editing) await mUpdate.mutateAsync({ data: { ...payload, id: editing.id } });
-              else await mCreate.mutateAsync({ data: payload });
-            } catch {/* toast handled in onError */}
+            if (editing) { await submitUpdate({ ...payload, id: editing.id }); return; }
+            try { await mCreate.mutateAsync({ data: payload }); } catch {/* toast handled in onError */}
           }}>
             <Field label="Name"><TextInput name="name" defaultValue={initial.name} required /></Field>
             <Field label="Amount"><TextInput type="number" step="0.01" name="amount" defaultValue={String(initial.amount ?? 0)} required /></Field>
