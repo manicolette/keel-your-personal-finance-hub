@@ -3040,9 +3040,23 @@ export async function pushDigest(sql: any, now = new Date()): Promise<{ send: bo
   return { send: true, title: bills.length ? "Keel · bills due" : "Keel", body: lines.join(" "), url: bills.length ? "/budget" : "/home" };
 }
 
-/** The daily job: send one reminder to every phone if there's anything to say. */
-export async function runDailyPush(sql: any) {
-  const digest = await pushDigest(sql);
+/**
+ * The reminder job. Vercel calls it once in every hour of the day (see vercel.json). It does
+ * nothing until the hour of the chosen reminder time has arrived in the person's time zone, then
+ * sends at most one reminder per day to every phone, only if there is something to say.
+ */
+export async function runDailyPush(sql: any, now = new Date()) {
+  const lib = await pushLib();
+  const st = ((await sql`SELECT timezone, remind_time FROM app_settings LIMIT 1`) as any[])[0] ?? {};
+  const today = lib.todayIn(st.timezone, now);
+  const target = Number(String(st.remind_time ?? "20:30").slice(0, 2)) || 0;
+  if (lib.hourIn(st.timezone, now) < target) return { sent: 0, reason: "before reminder time" };
+  // Claim today so later hours don't send again.
+  const claimed = (await sql`
+    UPDATE app_settings SET push_sent_on = ${today}::date
+    WHERE push_sent_on IS DISTINCT FROM ${today}::date RETURNING 1`) as any[];
+  if (claimed.length === 0) return { sent: 0, reason: "already handled today" };
+  const digest = await pushDigest(sql, now);
   if (!digest.send) return { sent: 0, reason: "nothing to remind" };
   const subs = (await sql`SELECT endpoint FROM push_subscriptions`) as any[];
   let sent = 0;

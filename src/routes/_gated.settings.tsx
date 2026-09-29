@@ -97,18 +97,19 @@ function RemindersCard({ settings, onSave, busy }: { settings: Settings; onSave:
   return (
     <Card>
       <h2 className="text-lg">Reminders</h2>
-      <p className="mb-1 text-xs text-muted-foreground">Shown at the top of Home when they apply.</p>
+      <p className="mb-1 text-xs text-muted-foreground">Shown at the top of Home when they apply, and sent to your phone if notifications are on below.</p>
       <div className="divide-y divide-muted">
         <Toggle k="remind_log" title="Daily logging reminder" sub="If nothing was logged today" />
-        {v.remind_log && (
-          <label className="flex items-center gap-3 py-3">
-            <span className="flex-1 text-[15px] font-semibold">Remind me from</span>
-            <input type="time" value={v.remind_time} onChange={(e) => setV((x) => ({ ...x, remind_time: e.target.value || "20:30" }))}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm font-semibold" />
-          </label>
-        )}
         <Toggle k="remind_bills" title="Bills due soon" sub="The day before and the day a bill is due" />
         <Toggle k="remind_income" title="Income expected" sub="On payday, to confirm it arrived" />
+        <label className="flex items-center gap-3 py-3">
+          <span className="flex-1">
+            <span className="block text-[15px] font-semibold">Reminder time</span>
+            <span className="block text-xs text-muted-foreground">Your phone gets the day's reminder within this hour. Home shows the logging reminder from this time.</span>
+          </span>
+          <input type="time" value={v.remind_time} onChange={(e) => setV((x) => ({ ...x, remind_time: e.target.value || "20:30" }))}
+            className="h-10 rounded-xl border border-input bg-background px-3 text-sm font-semibold" />
+        </label>
       </div>
       <div className="flex justify-end pt-2"><Button onClick={() => onSave(v)} disabled={busy}>Save reminders</Button></div>
     </Card>

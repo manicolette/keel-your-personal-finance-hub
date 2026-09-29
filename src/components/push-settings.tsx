@@ -112,7 +112,7 @@ export function PushSettingsCard() {
     <Card className="flex flex-col gap-3">
       <div>
         <h2 className="text-lg">Phone notifications</h2>
-        <p className="text-xs text-muted-foreground">One reminder a day, around 8 to 9 pm, only when there's something to say: nothing logged today, bills due today or tomorrow, or pay expected today. Uses the reminder switches above.</p>
+        <p className="text-xs text-muted-foreground">One reminder a day, during the hour of your reminder time above, only when there's something to say: nothing logged today, bills due today or tomorrow, or pay expected today. Uses the reminder switches above.</p>
       </div>
 
       {status.isLoading && <p className="text-sm text-muted-foreground">Checking…</p>}

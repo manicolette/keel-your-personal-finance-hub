@@ -1,3 +1,100 @@
 {
-  "crons": [{ "path": "/api/push-cron", "schedule": "30 0 * * *" }]
+  "crons": [
+    {
+      "path": "/api/push-hour/00",
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/push-hour/01",
+      "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/push-hour/02",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/push-hour/03",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/push-hour/04",
+      "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/push-hour/05",
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/push-hour/06",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/push-hour/07",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/push-hour/08",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/push-hour/09",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/push-hour/10",
+      "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/push-hour/11",
+      "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/push-hour/12",
+      "schedule": "0 12 * * *"
+    },
+    {
+      "path": "/api/push-hour/13",
+      "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/push-hour/14",
+      "schedule": "0 14 * * *"
+    },
+    {
+      "path": "/api/push-hour/15",
+      "schedule": "0 15 * * *"
+    },
+    {
+      "path": "/api/push-hour/16",
+      "schedule": "0 16 * * *"
+    },
+    {
+      "path": "/api/push-hour/17",
+      "schedule": "0 17 * * *"
+    },
+    {
+      "path": "/api/push-hour/18",
+      "schedule": "0 18 * * *"
+    },
+    {
+      "path": "/api/push-hour/19",
+      "schedule": "0 19 * * *"
+    },
+    {
+      "path": "/api/push-hour/20",
+      "schedule": "0 20 * * *"
+    },
+    {
+      "path": "/api/push-hour/21",
+      "schedule": "0 21 * * *"
+    },
+    {
+      "path": "/api/push-hour/22",
+      "schedule": "0 22 * * *"
+    },
+    {
+      "path": "/api/push-hour/23",
+      "schedule": "0 23 * * *"
+    }
+  ]
 }

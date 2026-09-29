@@ -77,7 +77,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   head: () => ({
     meta: [
       { charSet: "utf-8" },
-      { name: "viewport", content: "width=device-width, initial-scale=1" },
+      { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
       { title: "Keel — Personal Finance" },
       { name: "description", content: "Keel: a private personal finance tracker for accounts, transactions, budgets, subscriptions and net worth." },
       { name: "author", content: "Keel" },

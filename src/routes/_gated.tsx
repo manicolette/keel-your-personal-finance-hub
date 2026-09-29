@@ -76,6 +76,8 @@ function Shell() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
+      {/* Solid strip behind the phone's clock and battery so pages don't scroll under them. */}
+      <div aria-hidden className="fixed inset-x-0 top-0 z-40 h-[env(safe-area-inset-top)] bg-background md:hidden" />
       <div className="mx-auto flex max-w-7xl">
         {/* Sidebar (desktop) */}
         <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-border bg-card px-3 py-5 md:flex">
@@ -107,7 +109,7 @@ function Shell() {
           </button>
         </aside>
 
-        <main className="min-w-0 flex-1 px-4 pb-28 pt-5 md:px-8 md:py-6">
+        <main className="min-w-0 flex-1 px-4 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-[calc(1.25rem+env(safe-area-inset-top))] md:px-8 md:py-6">
           <Outlet />
         </main>
       </div>

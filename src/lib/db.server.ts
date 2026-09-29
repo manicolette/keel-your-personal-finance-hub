@@ -339,6 +339,7 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS timezone text;
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS push_test_at timestamptz;
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS push_sent_on date;
 `;
 
 export function ensureSchema(): Promise<void> {

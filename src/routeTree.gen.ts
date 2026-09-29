@@ -34,6 +34,7 @@ import { Route as GatedCategoriesRouteImport } from './routes/_gated.categories'
 import { Route as GatedBudgetRouteImport } from './routes/_gated.budget'
 import { Route as GatedAskRouteImport } from './routes/_gated.ask'
 import { Route as GatedAccountsRouteImport } from './routes/_gated.accounts'
+import { Route as ApiPushHourSlotRouteImport } from './routes/api/push-hour.$slot'
 
 const UnlockRoute = UnlockRouteImport.update({
   id: '/unlock',
@@ -159,6 +160,11 @@ const GatedAccountsRoute = GatedAccountsRouteImport.update({
   path: '/accounts',
   getParentRoute: () => GatedRoute,
 } as any)
+const ApiPushHourSlotRoute = ApiPushHourSlotRouteImport.update({
+  id: '/api/push-hour/$slot',
+  path: '/api/push-hour/$slot',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -185,6 +191,7 @@ export interface FileRoutesByFullPath {
   '/api/push-cron': typeof ApiPushCronRoute
   '/api/push-digest': typeof ApiPushDigestRoute
   '/api/upload-receipt': typeof ApiUploadReceiptRoute
+  '/api/push-hour/$slot': typeof ApiPushHourSlotRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -211,6 +218,7 @@ export interface FileRoutesByTo {
   '/api/push-cron': typeof ApiPushCronRoute
   '/api/push-digest': typeof ApiPushDigestRoute
   '/api/upload-receipt': typeof ApiUploadReceiptRoute
+  '/api/push-hour/$slot': typeof ApiPushHourSlotRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -239,6 +247,7 @@ export interface FileRoutesById {
   '/api/push-cron': typeof ApiPushCronRoute
   '/api/push-digest': typeof ApiPushDigestRoute
   '/api/upload-receipt': typeof ApiUploadReceiptRoute
+  '/api/push-hour/$slot': typeof ApiPushHourSlotRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -267,6 +276,7 @@ export interface FileRouteTypes {
     | '/api/push-cron'
     | '/api/push-digest'
     | '/api/upload-receipt'
+    | '/api/push-hour/$slot'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -293,6 +303,7 @@ export interface FileRouteTypes {
     | '/api/push-cron'
     | '/api/push-digest'
     | '/api/upload-receipt'
+    | '/api/push-hour/$slot'
   id:
     | '__root__'
     | '/'
@@ -320,6 +331,7 @@ export interface FileRouteTypes {
     | '/api/push-cron'
     | '/api/push-digest'
     | '/api/upload-receipt'
+    | '/api/push-hour/$slot'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -329,6 +341,7 @@ export interface RootRouteChildren {
   ApiPushCronRoute: typeof ApiPushCronRoute
   ApiPushDigestRoute: typeof ApiPushDigestRoute
   ApiUploadReceiptRoute: typeof ApiUploadReceiptRoute
+  ApiPushHourSlotRoute: typeof ApiPushHourSlotRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -508,6 +521,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GatedAccountsRouteImport
       parentRoute: typeof GatedRoute
     }
+    '/api/push-hour/$slot': {
+      id: '/api/push-hour/$slot'
+      path: '/api/push-hour/$slot'
+      fullPath: '/api/push-hour/$slot'
+      preLoaderRoute: typeof ApiPushHourSlotRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -564,6 +584,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPushCronRoute: ApiPushCronRoute,
   ApiPushDigestRoute: ApiPushDigestRoute,
   ApiUploadReceiptRoute: ApiUploadReceiptRoute,
+  ApiPushHourSlotRoute: ApiPushHourSlotRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

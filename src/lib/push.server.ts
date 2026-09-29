@@ -55,3 +55,13 @@ export function todayIn(timeZone: string | null | undefined, now = new Date()): 
     return now.toISOString().slice(0, 10);
   }
 }
+
+/** The hour of day (0-23) in the given IANA time zone. */
+export function hourIn(timeZone: string | null | undefined, now = new Date()): number {
+  try {
+    const h = new Intl.DateTimeFormat("en-US", { timeZone: timeZone || "America/New_York", hour: "numeric", hourCycle: "h23" }).format(now);
+    return Number(h) % 24;
+  } catch {
+    return now.getUTCHours();
+  }
+}
