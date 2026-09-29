@@ -1,15 +1,40 @@
 // Web Push without a library. Pushes are sent with no payload (so nothing needs encrypting);
 // when one arrives, the service worker asks /api/push/digest what to show. Only the VAPID
 // JWT is signed here, with Node's built-in crypto.
-import { createPrivateKey, sign } from "node:crypto";
+import { createPrivateKey, generateKeyPairSync, sign } from "node:crypto";
 
 const b64url = (buf: Buffer) => buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const fromB64url = (s: string) => Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 
-export function vapidConfig() {
-  const publicKey = process.env.VAPID_PUBLIC_KEY?.trim() || null;
-  const privateKey = process.env.VAPID_PRIVATE_KEY?.trim() || null;
+export type VapidConfig = { publicKey: string | null; privateKey: string | null; subject: string; ready: boolean };
+
+/** A fresh P-256 key pair: raw uncompressed public point and private scalar, both base64url. */
+export function newVapidPair() {
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const jwk = privateKey.export({ format: "jwk" }) as { x: string; y: string; d: string };
+  const pub = Buffer.concat([Buffer.from([4]), fromB64url(jwk.x), fromB64url(jwk.y)]);
+  return { publicKey: b64url(pub), privateKey: jwk.d };
+}
+
+/**
+ * The notification keys. VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY in the environment win if both are
+ * set. Otherwise Keel makes a pair the first time it's needed and keeps it in app_settings, so
+ * there is nothing to set up by hand.
+ */
+export async function vapidConfig(sql: any): Promise<VapidConfig> {
   const subject = process.env.VAPID_SUBJECT?.trim() || "https://keel-your-personal-finance-hub.vercel.app";
+  const envPub = process.env.VAPID_PUBLIC_KEY?.trim();
+  const envPriv = process.env.VAPID_PRIVATE_KEY?.trim();
+  if (envPub && envPriv) return { publicKey: envPub, privateKey: envPriv, subject, ready: true };
+  let row = ((await sql`SELECT vapid_public, vapid_private FROM app_settings LIMIT 1`) as any[])[0];
+  if (row && !row.vapid_public) {
+    const pair = newVapidPair();
+    // Only fills in if still empty, so two requests at once can't end up with different keys.
+    await sql`UPDATE app_settings SET vapid_public = ${pair.publicKey}, vapid_private = ${pair.privateKey} WHERE vapid_public IS NULL`;
+    row = ((await sql`SELECT vapid_public, vapid_private FROM app_settings LIMIT 1`) as any[])[0];
+  }
+  const publicKey = row?.vapid_public ?? null;
+  const privateKey = row?.vapid_private ?? null;
   return { publicKey, privateKey, subject, ready: !!publicKey && !!privateKey };
 }
 
@@ -30,9 +55,8 @@ export function vapidJwt(audience: string, publicKey: string, privateKey: string
 export type PushResult = { ok: true } | { ok: false; gone: boolean; status: number; error: string };
 
 /** Sends an empty push to one subscription endpoint. `gone` means the phone unsubscribed. */
-export async function sendPush(endpoint: string): Promise<PushResult> {
-  const cfg = vapidConfig();
-  if (!cfg.ready) return { ok: false, gone: false, status: 0, error: "Notification keys are not set in Vercel yet" };
+export async function sendPush(endpoint: string, cfg: VapidConfig): Promise<PushResult> {
+  if (!cfg.ready) return { ok: false, gone: false, status: 0, error: "Notification keys are missing" };
   const jwt = vapidJwt(new URL(endpoint).origin, cfg.publicKey!, cfg.privateKey!, cfg.subject);
   try {
     const res = await fetch(endpoint, {

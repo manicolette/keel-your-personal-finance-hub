@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import { getPushStatus, removePushSubscription, savePushSubscription, sendTestPush } from "@/lib/keel.functions";
 import { Button, Card } from "@/components/keel-ui";
 
-const b64url = (buf: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const fromB64url = (s: string) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
 
 function deviceName() {
@@ -30,7 +29,6 @@ export function PushSettingsCard() {
   const [endpoint, setEndpoint] = useState<string | null>(null);
   const [support, setSupport] = useState<Support>("ok");
   const [busy, setBusy] = useState(false);
-  const [keys, setKeys] = useState<{ pub: string; priv: string; secret: string } | null>(null);
 
   useEffect(() => {
     const ios = /iPhone|iPad/.test(navigator.userAgent);
@@ -98,16 +96,6 @@ export function PushSettingsCard() {
     }
   };
 
-  // Keys are made here, in the browser, so the private key never passes through Keel's server or a chat.
-  const makeKeys = async () => {
-    const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
-    const pub = b64url(await crypto.subtle.exportKey("raw", pair.publicKey));
-    const priv = (await crypto.subtle.exportKey("jwk", pair.privateKey)).d as string;
-    const secret = b64url(crypto.getRandomValues(new Uint8Array(32)).buffer);
-    setKeys({ pub, priv, secret });
-  };
-  const copy = (v: string, label: string) => navigator.clipboard.writeText(v).then(() => toast.success(`${label} copied`), () => toast.error("Couldn't copy; select and copy it by hand"));
-
   return (
     <Card className="flex flex-col gap-3">
       <div>
@@ -117,34 +105,10 @@ export function PushSettingsCard() {
 
       {status.isLoading && <p className="text-sm text-muted-foreground">Checking…</p>}
 
-      {s && !s.keys_ready && (
-        <div className="flex flex-col gap-3 rounded-2xl border border-dashed border-border bg-background p-3.5 text-sm">
-          <p className="font-semibold">One-time setup: add three keys in Vercel</p>
-          <ol className="flex list-decimal flex-col gap-1.5 pl-5 text-[13px]">
-            <li>Tap "Create keys" below. They're made on this device and shown only here.</li>
-            <li>In Vercel, open the Keel project, then Settings, then Environment Variables. Add each one below with its name and value, for all environments.</li>
-            <li>Redeploy Keel in Vercel (Deployments, then Redeploy on the latest one), then come back here.</li>
-          </ol>
-          {!keys ? <Button onClick={makeKeys}>Create keys</Button> : (
-            <div className="flex flex-col gap-2">
-              {([["VAPID_PUBLIC_KEY", keys.pub], ["VAPID_PRIVATE_KEY", keys.priv], ["CRON_SECRET", keys.secret]] as const).map(([name, val]) => (
-                <div key={name} className="flex flex-col gap-1 rounded-xl bg-card p-2.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <code className="text-xs font-bold">{name}</code>
-                    <Button size="sm" variant="outline" onClick={() => copy(val, name)}>Copy value</Button>
-                  </div>
-                  <code className="break-all text-[11px] text-muted-foreground">{val}</code>
-                </div>
-              ))}
-              <p className="text-[12px] text-muted-foreground">Keep the private key and cron secret only in Vercel. If you close this page before saving them, just create new ones.</p>
-            </div>
-          )}
-        </div>
-      )}
+      {s && !s.keys_ready && <p className="text-sm text-muted-foreground">Notifications aren't available right now. Try again in a moment.</p>}
 
       {s?.keys_ready && (
         <>
-          {!s.cron_ready && <p className="rounded-xl bg-[#fff0c9] px-3 py-2 text-[13px] text-[#6e500e]">CRON_SECRET isn't set in Vercel, so the daily reminder won't run yet. Test notifications still work.</p>}
           {support === "not-installed-ios" && <p className="text-sm">Open Keel from its Home Screen icon to turn on notifications on this iPhone.</p>}
           {support === "unsupported" && <p className="text-sm">This browser can't receive notifications. Use the installed Keel app on your phone.</p>}
           {support === "ok" && (

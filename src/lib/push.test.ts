@@ -1,7 +1,7 @@
 // Run with: npx tsx src/lib/push.test.ts
 import assert from "node:assert/strict";
 import { generateKeyPairSync, createPublicKey, verify } from "node:crypto";
-import { vapidJwt, todayIn } from "./push.server";
+import { vapidJwt, todayIn, newVapidPair, vapidConfig } from "./push.server";
 
 // Make a key pair the same shape the Settings page generates (raw public point + private scalar).
 const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -22,4 +22,18 @@ assert.throws(() => vapidJwt("https://x.com", "abc", jwk.d, "https://e.com"));
 
 assert.equal(todayIn("America/New_York", new Date("2026-10-01T02:30:00Z")), "2026-09-30", "evening in Florida is still the day before in UTC terms");
 assert.equal(todayIn("Africa/Accra", new Date("2026-10-01T02:30:00Z")), "2026-10-01");
+// Keys Keel makes for itself sign valid JWTs, and are made once and then reused.
+const made = newVapidPair();
+assert.equal(Buffer.from(made.publicKey, "base64url").length, 65);
+vapidJwt("https://fcm.googleapis.com", made.publicKey, made.privateKey, "https://e.com");
+delete process.env.VAPID_PUBLIC_KEY; delete process.env.VAPID_PRIVATE_KEY;
+const row: any = { vapid_public: null, vapid_private: null };
+const fake: any = (strings: TemplateStringsArray, ...v: any[]) => {
+  const q = strings.join("?");
+  if (q.startsWith("UPDATE")) { if (row.vapid_public == null) { row.vapid_public = v[0]; row.vapid_private = v[1]; } return Promise.resolve([]); }
+  return Promise.resolve([{ ...row }]);
+};
+const c1 = await vapidConfig(fake);
+const c2 = await vapidConfig(fake);
+assert.ok(c1.ready && c1.publicKey === c2.publicKey && c1.privateKey === c2.privateKey, "same keys every time");
 console.log("all push tests passed");

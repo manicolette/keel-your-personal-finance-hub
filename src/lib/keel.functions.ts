@@ -2958,12 +2958,12 @@ export type PushStatus = {
 export const getPushStatus = createServerFn({ method: "GET" }).handler(async (): Promise<PushStatus> => {
   await requireUnlocked();
   const sql = await db();
-  const cfg = (await pushLib()).vapidConfig();
+  const cfg = await (await pushLib()).vapidConfig(sql);
   const rows = (await sql`SELECT id, endpoint, device, created_at, last_sent_at, last_error FROM push_subscriptions ORDER BY created_at`) as any[];
   return {
     public_key: cfg.publicKey,
     keys_ready: cfg.ready,
-    cron_ready: !!process.env.CRON_SECRET,
+    cron_ready: true,
     devices: rows.map((r) => ({
       id: r.id, endpoint: r.endpoint, device: s(r.device), created_at: String(r.created_at),
       last_sent_at: r.last_sent_at == null ? null : String(r.last_sent_at), last_error: s(r.last_error),
@@ -3002,7 +3002,8 @@ export const removePushSubscription = createServerFn({ method: "POST" })
   });
 
 async function pushTo(sql: any, endpoint: string) {
-  const res = await (await pushLib()).sendPush(endpoint);
+  const lib = await pushLib();
+  const res = await lib.sendPush(endpoint, await lib.vapidConfig(sql));
   if (res.ok) await sql`UPDATE push_subscriptions SET last_sent_at = now(), last_error = NULL WHERE endpoint = ${endpoint}`;
   else if (res.gone) await sql`DELETE FROM push_subscriptions WHERE endpoint = ${endpoint}`;
   else await sql`UPDATE push_subscriptions SET last_error = ${`${res.status} ${res.error}`.slice(0, 300)} WHERE endpoint = ${endpoint}`;
