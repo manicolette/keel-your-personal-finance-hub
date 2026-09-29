@@ -608,6 +608,10 @@ export const deleteSubscription = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
+    await sql`
+      DELETE FROM monthly_expense_instances
+      WHERE subscription_id = ${data.id} AND month >= date_trunc('month', current_date)::date
+        AND status = 'pending' AND transaction_id IS NULL`;
     await sql`DELETE FROM subscriptions WHERE id = ${data.id}`;
     return { ok: true };
   });
@@ -1848,6 +1852,14 @@ export const getBudget = createServerFn({ method: "GET" })
   });
 
 // Shared by the Budget page and Home: materializes this month's bills and returns groups.
+async function dropOrphanInstances(sql: any, monthDate: string) {
+  await sql`
+    DELETE FROM monthly_expense_instances
+    WHERE month = ${monthDate}::date AND month >= date_trunc('month', current_date)::date
+      AND monthly_expense_id IS NULL AND subscription_id IS NULL AND is_ad_hoc = false
+      AND status = 'pending' AND transaction_id IS NULL`;
+}
+
 async function loadBudget(sql: any, monthYm: string) {
     const monthDate = `${monthYm}-01`;
 
@@ -1910,6 +1922,11 @@ async function loadBudget(sql: any, monthYm: string) {
       WHERE s.active = true
         AND date_trunc('month', s.created_at)::date <= ${monthDate}::date
       ON CONFLICT (subscription_id, month) WHERE subscription_id IS NOT NULL DO NOTHING`;
+
+    // A bill or subscription that was deleted leaves its unpaid copies behind with no link
+    // (ON DELETE SET NULL). For this month and later, those are stale duplicates: drop them.
+    // One-offs (is_ad_hoc), anything paid or skipped, and past months are never touched.
+    await dropOrphanInstances(sql, monthDate);
 
     const instanceRows = (await sql`
       SELECT mei.id, mei.monthly_expense_id, mei.month, mei.name_snapshot, mei.category_id,
@@ -2324,7 +2341,12 @@ export const deleteMonthlyExpense = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await requireUnlocked();
     const sql = await db();
-    // Instance rows keep their history via ON DELETE SET NULL on monthly_expense_id.
+    // Unpaid copies for this month on go with it; paid ones and past months keep their history
+    // via ON DELETE SET NULL on monthly_expense_id.
+    await sql`
+      DELETE FROM monthly_expense_instances
+      WHERE monthly_expense_id = ${data.id} AND month >= date_trunc('month', current_date)::date
+        AND status = 'pending' AND transaction_id IS NULL`;
     await sql`DELETE FROM monthly_expenses WHERE id = ${data.id}`;
     return { ok: true };
   });
