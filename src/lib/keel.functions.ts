@@ -17,6 +17,7 @@ export type Account = {
   current_balance: number;
   archived: boolean;
   sort_order: number;
+  anchor_date: string | null; // set when the balance was reset for a month; null = never reset
 };
 export type Category = {
   id: string;
@@ -311,8 +312,11 @@ export const updateSettings = createServerFn({ method: "POST" })
   });
 
 // -------------------------- Accounts --------------------------
-// Live per-account balance: opening + income - expense - transfers out + transfers in.
+// Live per-account balance: base + income - expense - transfers out + transfers in.
 // Always computed from the transactions table, never stored, so it cannot drift.
+// The base is the reset anchor when the account has been reset for a month (and then only
+// transactions dated after the anchor count), otherwise the opening balance plus every
+// transaction. This is what stops an under-logged month from carrying a wrong total forward.
 export const listAccounts = createServerFn({ method: "GET" }).handler(async () => {
   await requireUnlocked();
   const sql = await db();
@@ -321,22 +325,25 @@ export const listAccounts = createServerFn({ method: "GET" }).handler(async () =
 
 async function loadAccounts(sql: any): Promise<Account[]> {
   const rows = (await sql`
-    SELECT a.id, a.name, a.kind, a.currency, a.opening_balance, a.archived, a.sort_order,
-      a.opening_balance
+    SELECT a.id, a.name, a.kind, a.currency, a.opening_balance, a.archived, a.sort_order, a.anchor_date,
+      COALESCE(a.anchor_balance, a.opening_balance)
       + COALESCE((
           SELECT SUM(CASE WHEN t.kind = 'income' THEN t.amount
                           WHEN t.kind IN ('expense','transfer') THEN -t.amount
                           ELSE 0 END)
-          FROM transactions t WHERE t.account_id = a.id), 0)
+          FROM transactions t WHERE t.account_id = a.id
+            AND (a.anchor_date IS NULL OR t.on_date > a.anchor_date)), 0)
       + COALESCE((
           SELECT SUM(t.amount) FROM transactions t
-          WHERE t.kind = 'transfer' AND t.transfer_account_id = a.id), 0)
+          WHERE t.kind = 'transfer' AND t.transfer_account_id = a.id
+            AND (a.anchor_date IS NULL OR t.on_date > a.anchor_date)), 0)
       AS current_balance
     FROM accounts a ORDER BY a.sort_order, a.name`) as any[];
   return rows.map((r) => ({
     ...r,
     opening_balance: n(r.opening_balance),
     current_balance: n(r.current_balance),
+    anchor_date: dOrNull(r.anchor_date),
   })) as Account[];
 }
 
@@ -381,6 +388,54 @@ export const deleteAccount = createServerFn({ method: "POST" })
     const sql = await db();
     await sql`DELETE FROM accounts WHERE id = ${data.id}`;
     return { ok: true };
+  });
+
+// -------------------------- Monthly account reset --------------------------
+// Re-baseline account balances at the start of a month so a month where spending wasn't
+// fully logged doesn't carry a wrong total forward. The user enters each account's real
+// balance; it becomes the anchor as of the first of the month, and only transactions after
+// that date count toward the balance from then on. Past transactions are kept as history.
+const thisMonthStr = () => new Date().toISOString().slice(0, 7);
+
+export const getResetStatus = createServerFn({ method: "GET" }).handler(async () => {
+  await requireUnlocked();
+  const sql = await db();
+  const rows = (await sql`SELECT to_char(last_reset_month,'YYYY-MM') AS last, remind_reset FROM app_settings LIMIT 1`) as any[];
+  const last = rows[0]?.last ?? null;
+  const month = thisMonthStr();
+  return {
+    month,
+    last_reset_month: last,
+    // Due once the calendar month is past the last reset. Null last = never reset yet.
+    due: (rows[0]?.remind_reset !== false) && (last == null || last < month),
+  };
+});
+
+export const resetAccountsForMonth = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) =>
+    z.object({
+      month: z.string().regex(/^\d{4}-\d{2}$/, "Month must be YYYY-MM"),
+      balances: z.array(z.object({
+        account_id: z.string().uuid(),
+        balance: z.coerce.number(),
+      })).min(1, "Enter at least one balance"),
+    }).parse(data),
+  )
+  .handler(async ({ data }) => {
+    await requireUnlocked();
+    const sql = await db();
+    const anchorDate = `${data.month}-01`;
+    try {
+      for (const b of data.balances) {
+        await sql`
+          UPDATE accounts SET anchor_balance = ${b.balance}, anchor_date = ${anchorDate}::date
+          WHERE id = ${b.account_id}`;
+      }
+      await sql`UPDATE app_settings SET last_reset_month = ${anchorDate}::date`;
+      return { ok: true, count: data.balances.length };
+    } catch (err) {
+      throw new Error(`Failed to reset balances: ${(err as Error).message}`);
+    }
   });
 
 // -------------------------- Categories --------------------------
@@ -2524,7 +2579,7 @@ export type HomeData = {
   debt: { total: number; minimums: number; extra: number; count: number };
   reminders: { id: string; title: string; due_date: string; amount: number | null }[];
   /** "after" (HH:MM) means show only from that local time on. */
-  nudges: { kind: "log" | "bill" | "income"; text: string; after?: string }[];
+  nudges: { kind: "log" | "bill" | "income" | "reset"; text: string; after?: string }[];
   /** Progress through first-time setup, for the checklist on Home. */
   setup: { accounts_with_balance: number; bank_accounts: number; income_sources: number; bills: number; bills_without_account: number; limits: number };
 };
@@ -2547,7 +2602,7 @@ export const getHome = createServerFn({ method: "GET" })
 
 async function loadHome(sql: any, monthIn: string, today: string): Promise<HomeData> {
     const data = { month: monthIn, today };
-    const settings = (await sql`SELECT start_month, remind_log, remind_time, remind_bills, remind_income FROM app_settings LIMIT 1`) as any[];
+    const settings = (await sql`SELECT start_month, remind_log, remind_time, remind_bills, remind_income, remind_reset, to_char(last_reset_month,'YYYY-MM') AS last_reset_month FROM app_settings LIMIT 1`) as any[];
     const start = settings[0]?.start_month ? d(settings[0].start_month).slice(0, 7) : DEFAULT_START_MONTH;
     const month = clampMonth(data.month, start);
 
@@ -2656,9 +2711,14 @@ async function loadHome(sql: any, monthIn: string, today: string): Promise<HomeD
 // In-app reminders shown on Home: nothing logged today (after the chosen time), bills due today or
 // tomorrow, and pay expected today. Each can be switched off in Settings.
 async function buildNudges(sql: any, st: any, today: string, month: string, pending: MonthlyExpenseInstance[], incomeInst: IncomeInstance[]) {
-  const out: { kind: "log" | "bill" | "income"; text: string; after?: string }[] = [];
+  const out: { kind: "log" | "bill" | "income" | "reset"; text: string; after?: string }[] = [];
   if (!today.startsWith(month)) return out;
   const dayNum = Number(today.slice(8, 10));
+  // New-month prompt: once the calendar month is past the last reset, ask to re-baseline
+  // balances so last month's total (which may be wrong if spending went unlogged) doesn't carry over.
+  if (st.remind_reset !== false && (st.last_reset_month == null || st.last_reset_month < month)) {
+    out.push({ kind: "reset", text: "New month. Reset your account balances so last month's total doesn't carry over." });
+  }
   if (st.remind_bills !== false) {
     for (const i of pending) {
       if (i.due_day === dayNum) out.push({ kind: "bill", text: `${i.name} ($${i.planned_amount.toFixed(2)}) is due today.` });
@@ -3055,12 +3115,16 @@ export async function pushDigest(sql: any, now = new Date()): Promise<{ send: bo
   const items = home.nudges;
   if (items.length === 0) return { send: false, title: "Keel", body: "All clear today.", url: "/home" };
   const bills = items.filter((i) => i.kind === "bill");
+  const resets = items.filter((i) => i.kind === "reset");
   const lines = [
+    ...resets.map((i) => i.text),
     ...items.filter((i) => i.kind === "income").map((i) => i.text),
     ...(bills.length > 2 ? [`${bills.length} bills are due today or tomorrow.`] : bills.map((i) => i.text)),
     ...items.filter((i) => i.kind === "log").map((i) => i.text),
   ];
-  return { send: true, title: bills.length ? "Keel · bills due" : "Keel", body: lines.join(" "), url: bills.length ? "/budget" : "/home" };
+  const title = bills.length ? "Keel · bills due" : resets.length ? "Keel · new month" : "Keel";
+  const url = resets.length ? "/accounts" : bills.length ? "/budget" : "/home";
+  return { send: true, title, body: lines.join(" "), url };
 }
 
 /**

@@ -353,6 +353,7 @@ function Nudges({ data, onLog }: { data: HomeData; onLog: () => void }) {
           <span className="flex-1">{n.text}</span>
           {n.kind === "log" && <button onClick={onLog} className="h-9 shrink-0 rounded-full bg-primary px-3 text-xs font-bold text-primary-foreground">Log it</button>}
           {n.kind === "income" && <Link to="/income" className="h-9 shrink-0 rounded-full bg-foreground px-3 py-2 text-xs font-bold text-background">Income</Link>}
+          {n.kind === "reset" && <Link to="/accounts" className="h-9 shrink-0 rounded-full bg-foreground px-3 py-2 text-xs font-bold text-background">Reset</Link>}
           <button onClick={() => setHidden((h) => [...h, n.text])} aria-label="Dismiss" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full"><X size={16} /></button>
         </div>
       ))}

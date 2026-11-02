@@ -342,6 +342,19 @@ ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS push_test_at timestamptz;
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS push_sent_on date;
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS vapid_public text;
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS vapid_private text;
+
+-- Additive: monthly account reset (re-baseline). When an account has an anchor, its live
+-- balance is the anchor balance plus only the transactions dated after anchor_date, so an
+-- under-logged month does not carry a wrong total forward. Null anchor = old behaviour
+-- (opening_balance + every transaction).
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS anchor_balance numeric(14,2);
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS anchor_date date;
+-- The month (first of month) the balances were last reset, drives the new-month prompt.
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS last_reset_month date;
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS remind_reset boolean NOT NULL DEFAULT true;
+-- Seed to the current month so existing users are not prompted retroactively; the prompt
+-- begins on the 1st of the next month.
+UPDATE app_settings SET last_reset_month = date_trunc('month', CURRENT_DATE)::date WHERE last_reset_month IS NULL;
 `;
 
 export function ensureSchema(): Promise<void> {
